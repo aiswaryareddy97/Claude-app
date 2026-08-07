@@ -20,6 +20,10 @@ real-time sync across everyone's phones.
 - **Join Game** → enter the code to join instantly, live-synced via Firestore
 - **Multiple buy-ins per player** (rebuys) — swipe a player row to add one
 - **Cash out** — swipe a player row, enter their final chip count
+- **Edit requests** — correcting an already-recorded buy-in or cash-out
+  (as opposed to entering a brand-new one) needs another player at the
+  table to accept it first; swipe a player row the other direction to
+  request a correction
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
 - **History tab** — past games and your net result, saved on-device
@@ -121,6 +125,18 @@ live.
 - Everyone in the game listens to the same Firestore document and
   subcollection in real time, so buy-ins and cash-outs appear on all phones
   within a second or two.
+
+## How edit requests work
+
+Adding a fresh buy-in or a player's first cash-out is instant, same as
+before. Correcting a value that's already been recorded is different: it
+creates a pending `editRequests` document instead of touching the player's
+data directly. Every other phone in the game sees it in a **Pending
+Requests** section; anyone except whoever filed the request can tap Accept
+(which applies the change) or Reject (which just dismisses it). This keeps
+one person from unilaterally rewriting the numbers after the fact, while
+still letting any two people at the table resolve a mistake without
+needing the host specifically.
 
 ## Settlement algorithm
 

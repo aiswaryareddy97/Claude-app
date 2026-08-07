@@ -12,11 +12,14 @@ struct GameRoomView: View {
     @State private var playersListener: ListenerRegistration?
     @State private var showBuyInSheet: GamePlayer?
     @State private var showCashOutSheet: GamePlayer?
+    @State private var showEditSheet: GamePlayer?
     @State private var showShareSheet = false
     @State private var showEndGameConfirm = false
     @State private var showMissingCashOutAlert = false
     @State private var showSettlement = false
     @State private var errorMessage: String?
+    @State private var editRequests: [EditRequest] = []
+    @State private var editRequestsListener: ListenerRegistration?
 
     private var myUid: String? { AuthService.shared.currentUID }
     private var isHost: Bool { game?.hostId == myUid }
@@ -42,6 +45,11 @@ struct GameRoomView: View {
         .sheet(item: $showCashOutSheet) { player in
             CashOutSheet(player: player) { amount in
                 await submitCashOut(player: player, amount: amount)
+            }
+        }
+        .sheet(item: $showEditSheet) { player in
+            if let myUid {
+                EditRequestSheet(code: code, player: player, requesterUid: myUid, requesterName: playerName)
             }
         }
         .sheet(isPresented: $showShareSheet) {
@@ -96,6 +104,14 @@ struct GameRoomView: View {
                 .padding(.vertical, 4)
             }
 
+            if !editRequests.isEmpty {
+                Section("Pending Requests") {
+                    ForEach(editRequests) { request in
+                        editRequestRow(request)
+                    }
+                }
+            }
+
             Section("Players (\(players.count))") {
                 ForEach(players) { player in
                     PlayerRowView(player: player, isMe: player.uid == myUid)
@@ -116,6 +132,16 @@ struct GameRoomView: View {
                                     }
                                     .tint(.blue)
                                 }
+                            }
+                        }
+                        .swipeActions(edge: .leading) {
+                            if game.status == .active && (!player.buyIns.isEmpty || player.hasCashedOut) {
+                                Button {
+                                    showEditSheet = player
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(.orange)
                             }
                         }
                 }
@@ -155,6 +181,36 @@ struct GameRoomView: View {
         }
     }
 
+    @ViewBuilder
+    private func editRequestRow(_ request: EditRequest) -> some View {
+        let fieldLabel = request.field == .buyIn ? "buy-in" : "cash-out"
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(request.requestedByName) wants to change \(request.playerName)'s \(fieldLabel) from \(request.oldAmount.currencyString) to \(request.newAmount.currencyString)")
+                .font(.subheadline)
+
+            if request.requestedBy == myUid {
+                Text("Waiting for another player to accept…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Button("Accept") {
+                        Task { await respond(to: request, accept: true) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+
+                    Button("Reject") {
+                        Task { await respond(to: request, accept: false) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .font(.caption)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     private func attachListeners() {
         gameListener = GameService.shared.listenToGame(code: code) { updatedGame in
             let previousStatus = game?.status
@@ -168,11 +224,24 @@ struct GameRoomView: View {
         playersListener = GameService.shared.listenToPlayers(code: code) { updatedPlayers in
             players = updatedPlayers
         }
+        editRequestsListener = GameService.shared.listenToEditRequests(code: code) { updatedRequests in
+            editRequests = updatedRequests
+        }
     }
 
     private func detachListeners() {
         gameListener?.remove()
         playersListener?.remove()
+        editRequestsListener?.remove()
+    }
+
+    private func respond(to request: EditRequest, accept: Bool) async {
+        guard let uid = myUid else { return }
+        do {
+            try await GameService.shared.respondToEditRequest(code: code, request: request, accept: accept, responderUid: uid)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func submitBuyIn(player: GamePlayer, amount: Double) async {

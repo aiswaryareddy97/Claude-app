@@ -31,6 +31,10 @@ final class GameService {
         gameRef(code).collection("players")
     }
 
+    private func editRequestsRef(_ code: String) -> CollectionReference {
+        gameRef(code).collection("editRequests")
+    }
+
     func createGame(name: String, hostUid: String, hostName: String, defaultBuyIn: Double) async throws -> PokerGame {
         for _ in 0..<8 {
             let code = GameCodeGenerator.generate()
@@ -125,5 +129,94 @@ final class GameService {
             "status": PokerGame.Status.ended.rawValue,
             "endedAt": Timestamp(date: Date())
         ])
+    }
+
+    // MARK: - Edit requests
+
+    /// Requests a correction to an already-recorded buy-in or cash-out. Doesn't change
+    /// anything by itself — another player has to accept it via `respondToEditRequest`.
+    func requestEdit(
+        code: String,
+        playerUid: String,
+        playerName: String,
+        field: EditRequest.Field,
+        buyInId: String?,
+        oldAmount: Double,
+        newAmount: Double,
+        requestedByUid: String,
+        requestedByName: String
+    ) async throws {
+        let request = EditRequest(
+            playerUid: playerUid,
+            playerName: playerName,
+            field: field,
+            buyInId: buyInId,
+            oldAmount: oldAmount,
+            newAmount: newAmount,
+            requestedBy: requestedByUid,
+            requestedByName: requestedByName
+        )
+        try await editRequestsRef(code).document(request.id).setData(request.dictionary)
+    }
+
+    func listenToEditRequests(code: String, onChange: @escaping ([EditRequest]) -> Void) -> ListenerRegistration {
+        editRequestsRef(code)
+            .whereField("status", isEqualTo: EditRequest.Status.pending.rawValue)
+            .addSnapshotListener { snapshot, _ in
+                guard let documents = snapshot?.documents else {
+                    onChange([])
+                    return
+                }
+                let requests = documents
+                    .compactMap { EditRequest(id: $0.documentID, data: $0.data()) }
+                    .sorted { $0.createdAt < $1.createdAt }
+                onChange(requests)
+            }
+    }
+
+    /// Accepting applies the correction to the player's record and resolves the request
+    /// in the same transaction; rejecting just resolves it.
+    func respondToEditRequest(code: String, request: EditRequest, accept: Bool, responderUid: String) async throws {
+        let requestRef = editRequestsRef(code).document(request.id)
+
+        guard accept else {
+            try await requestRef.updateData([
+                "status": EditRequest.Status.rejected.rawValue,
+                "resolvedAt": Timestamp(date: Date()),
+                "resolvedBy": responderUid
+            ])
+            return
+        }
+
+        let playerRef = playersRef(code).document(request.playerUid)
+        _ = try await db.runTransaction { transaction, errorPointer in
+            let playerSnapshot: DocumentSnapshot
+            do {
+                playerSnapshot = try transaction.getDocument(playerRef)
+            } catch let error as NSError {
+                errorPointer?.pointee = error
+                return nil
+            }
+            guard var playerData = playerSnapshot.data() else { return nil }
+
+            switch request.field {
+            case .cashOut:
+                playerData["cashOut"] = request.newAmount
+            case .buyIn:
+                var buyInsData = playerData["buyIns"] as? [[String: Any]] ?? []
+                if let index = buyInsData.firstIndex(where: { $0["id"] as? String == request.buyInId }) {
+                    buyInsData[index]["amount"] = request.newAmount
+                    playerData["buyIns"] = buyInsData
+                }
+            }
+
+            transaction.setData(playerData, forDocument: playerRef)
+            transaction.updateData([
+                "status": EditRequest.Status.approved.rawValue,
+                "resolvedAt": Timestamp(date: Date()),
+                "resolvedBy": responderUid
+            ], forDocument: requestRef)
+            return nil
+        }
     }
 }
