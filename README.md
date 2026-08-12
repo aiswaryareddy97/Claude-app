@@ -7,12 +7,16 @@ cash-outs update in real time. At the end of the night the app calculates the
 minimum set of payments needed to settle up.
 
 Built with SwiftUI (iOS 17+) and Firebase (Anonymous Auth + Firestore) for
-real-time sync across everyone's phones.
+real-time sync across everyone's phones. There's also a functional plain
+HTML/JS web version under `docs/` — same backend, no Xcode or App Store
+needed, installable straight from Safari (see "Web app" below).
 
 > **Note:** this was generated in a Linux cloud environment without Xcode, so
-> the code has not been compiled. Open it in Xcode and fix anything the
+> the Swift code has not been compiled. Open it in Xcode and fix anything the
 > compiler flags — the structure and logic below should get you most of the
-> way there.
+> way there. The `docs/` web app has the same caveat for JS syntax issues,
+> though it's much easier to check yourself: open it in a browser and read
+> the console.
 
 ## Features
 
@@ -112,6 +116,46 @@ Xcode's Signing & Capabilities tab) and hit Run. To test the multiplayer
 flow, run the app on two simulators at once (or a simulator + your phone):
 host a game on one, join with the code on the other, and watch buy-ins sync
 live.
+
+## Web app (`docs/`) — the same app, no Xcode required
+
+`docs/` is a second, fully functional client for the exact same backend: a
+plain HTML/CSS/vanilla-JS PWA (no build step, no framework) that talks to
+the same Firestore schema and rules as the Swift app, using the Firebase
+Web SDK. It's what's actually running if you added this site to your
+iPhone's home screen via Safari — install it once and future pushes to
+`docs/` update it automatically.
+
+- `docs/index.html` — page shell + all CSS
+- `docs/app.js` — everything else: Firebase init/auth, the same
+  `createGame`/`joinGame`/`addBuyIn`/`setCashOut`/`endGame`/`requestEdit`/
+  `respondToEditRequest` operations as `GameService.swift`, the same
+  settlement algorithm, and localStorage-based history (in place of
+  `UserDefaults`)
+- `docs/firebase-config.js` — the only file you need to edit to connect it
+  to your backend
+- `docs/manifest.json` + icon PNGs — makes it installable
+
+### Connecting it to Firebase
+
+1. In the **same Firebase project** you made for the iOS app (or a fresh
+   one, if you're only using the web version): **Project settings → General
+   → Your apps → Add app → Web (`</>`)** → give it any nickname → Register.
+   Firebase shows you a `firebaseConfig` object.
+2. Paste those values into `docs/firebase-config.js`, replacing the
+   `REPLACE_ME` placeholders.
+3. Make sure Anonymous Auth and Firestore (with `firestore.rules` applied)
+   are set up in that project — same steps 2–3 under **Setup** above.
+4. Commit and push. If GitHub Pages is already on for this repo
+   (**Settings → Pages → Deploy from a branch**, this branch, `/docs`),
+   it redeploys within a minute or two of any push.
+5. Reopen the app from your home screen icon (a full close-and-reopen, not
+   just backgrounding it, if it was showing the old static preview) — it's
+   now the real, live app instead of a mockup.
+
+Because it's the same Firestore schema, an iOS build and the web app can
+join the exact same game and see each other's buy-ins live, once both are
+pointed at the same Firebase project.
 
 ## How the game code works
 
