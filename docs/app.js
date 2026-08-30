@@ -72,7 +72,7 @@ const editRequestRef = (code, id) => doc(db, "games", code, "editRequests", id);
 // Game service — mirrors PokerTracker/Services/GameService.swift
 // ---------------------------------------------------------------------
 
-async function createGame(name, hostUid, hostName, defaultBuyIn) {
+async function createGame(name, hostUid, hostName, defaultBuyIn, chipsPerDollar) {
   for (let i = 0; i < 8; i++) {
     const code = generateCode();
     const ref = gameRef(code);
@@ -87,6 +87,7 @@ async function createGame(name, hostUid, hostName, defaultBuyIn) {
       defaultBuyIn,
       createdAt: Timestamp.now(),
     };
+    if (chipsPerDollar) game.chipsPerDollar = chipsPerDollar;
     await setDoc(ref, game);
 
     const player = {
@@ -282,6 +283,8 @@ function calculateSettlement(players) {
 const HISTORY_KEY = "poker.history.entries";
 const ACTIVE_CODE_KEY = "poker.history.activeCode";
 const NAME_KEY = "poker.playerName";
+const LAST_BUYIN_KEY = "poker.lastDefaultBuyIn";
+const LAST_CHIPVALUE_KEY = "poker.lastChipValue";
 
 function loadHistory() {
   try {
@@ -325,6 +328,78 @@ function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text ?? "";
   return div.innerHTML;
+}
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// ---------------------------------------------------------------------
+// Chip-aware amount input — lets someone enter either a chip count or a
+// dollar amount and converts between them live, when the game has a
+// chip ratio set. Falls back to a plain dollar field when it doesn't.
+// ---------------------------------------------------------------------
+
+function mountAmountInput(container, { chipsPerDollar, initialDollars = "", idPrefix = "amt" }) {
+  const dollarId = `${idPrefix}-dollars`;
+
+  if (!chipsPerDollar) {
+    container.innerHTML = `<input class="field" id="${dollarId}" type="number" inputmode="decimal" value="${initialDollars}" min="0" />`;
+    return { getAmount: () => parseFloat(document.getElementById(dollarId).value) };
+  }
+
+  const chipId = `${idPrefix}-chips`;
+  const readoutId = `${idPrefix}-readout`;
+  let mode = "chips";
+  const initialChips =
+    initialDollars !== "" && isFinite(initialDollars) ? round2(initialDollars * chipsPerDollar) : "";
+
+  container.innerHTML = `
+    <div class="amount-toggle">
+      <button type="button" class="amount-toggle-btn active" data-mode="chips">Chips</button>
+      <button type="button" class="amount-toggle-btn" data-mode="dollars">$</button>
+    </div>
+    <input class="field" id="${chipId}" type="number" inputmode="decimal" value="${initialChips}" min="0" placeholder="e.g. 500" />
+    <input class="field" id="${dollarId}" type="number" inputmode="decimal" value="${initialDollars}" min="0" hidden />
+    <p class="amount-readout" id="${readoutId}"></p>
+  `;
+
+  const chipInput = container.querySelector(`#${chipId}`);
+  const dollarInput = container.querySelector(`#${dollarId}`);
+  const readout = container.querySelector(`#${readoutId}`);
+  const buttons = container.querySelectorAll(".amount-toggle-btn");
+
+  function updateReadout() {
+    if (mode === "chips") {
+      const chips = parseFloat(chipInput.value);
+      readout.textContent = isFinite(chips) ? `= ${money(chips / chipsPerDollar)}` : "";
+    } else {
+      const dollars = parseFloat(dollarInput.value);
+      readout.textContent = isFinite(dollars) ? `= ${Math.round(dollars * chipsPerDollar)} chips` : "";
+    }
+  }
+
+  buttons.forEach((btn) => {
+    btn.onclick = () => {
+      mode = btn.dataset.mode;
+      buttons.forEach((b) => b.classList.toggle("active", b === btn));
+      chipInput.hidden = mode !== "chips";
+      dollarInput.hidden = mode !== "dollars";
+      updateReadout();
+    };
+  });
+  chipInput.oninput = updateReadout;
+  dollarInput.oninput = updateReadout;
+  updateReadout();
+
+  return {
+    getAmount: () => {
+      if (mode === "chips") {
+        const chips = parseFloat(chipInput.value);
+        return isFinite(chips) ? round2(chips / chipsPerDollar) : NaN;
+      }
+      return parseFloat(dollarInput.value);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -590,12 +665,20 @@ function renderHome() {
 }
 
 function openHostSheet() {
+  const lastBuyIn = localStorage.getItem(LAST_BUYIN_KEY) || "20";
+  const lastChipValue = localStorage.getItem(LAST_CHIPVALUE_KEY) || "";
+
   openSheet(`
     <h2>Host New Game</h2>
     <label class="field-label" for="sheet-game-name">Game name (optional)</label>
     <input class="field" id="sheet-game-name" type="text" placeholder="Friday Night Poker" />
-    <label class="field-label" for="sheet-buyin">Default buy-in</label>
-    <input class="field" id="sheet-buyin" type="number" inputmode="decimal" value="20" min="0" />
+    <label class="field-label" for="sheet-buyin">Default buy-in ($)</label>
+    <input class="field" id="sheet-buyin" type="number" inputmode="decimal" value="${escapeHtml(lastBuyIn)}" min="0" />
+    <label class="field-label" for="sheet-chipvalue">Chip value for that buy-in (optional)</label>
+    <input class="field" id="sheet-chipvalue" type="number" inputmode="decimal" placeholder="e.g. 500" value="${escapeHtml(
+      lastChipValue
+    )}" min="0" />
+    <p class="sheet-note">If a buy-in hands out chips labeled in a different number (like a stack marked "500" for a $20 buy-in), enter that number here — everyone can then enter chip counts at cash-out instead of doing the math. Leave blank to just use dollars. Remembered for next time either way.</p>
     <p class="sheet-error" id="sheet-error"></p>
     <div class="sheet-actions">
       <button class="btn outline" data-close>Cancel</button>
@@ -605,10 +688,21 @@ function openHostSheet() {
   document.getElementById("sheet-submit").onclick = async (e) => {
     const button = e.currentTarget;
     const name = document.getElementById("sheet-game-name").value;
-    const amount = parseFloat(document.getElementById("sheet-buyin").value);
+    const buyInAmount = parseFloat(document.getElementById("sheet-buyin").value);
+    const defaultBuyIn = isFinite(buyInAmount) && buyInAmount > 0 ? buyInAmount : 20;
+    const chipValueRaw = document.getElementById("sheet-chipvalue").value.trim();
+    const chipValue = chipValueRaw === "" ? null : parseFloat(chipValueRaw);
+    const chipsPerDollar = chipValue && isFinite(chipValue) && chipValue > 0 ? chipValue / defaultBuyIn : null;
+
     button.disabled = true;
     try {
-      const game = await createGame(name, state.uid, state.playerName, isFinite(amount) ? amount : 20);
+      const game = await createGame(name, state.uid, state.playerName, defaultBuyIn, chipsPerDollar);
+      localStorage.setItem(LAST_BUYIN_KEY, String(defaultBuyIn));
+      if (chipValue) {
+        localStorage.setItem(LAST_CHIPVALUE_KEY, String(chipValue));
+      } else {
+        localStorage.removeItem(LAST_CHIPVALUE_KEY);
+      }
       closeSheet();
       enterGame(game.code);
     } catch (err) {
@@ -659,6 +753,8 @@ function renderRoom() {
        </div>`
     : "";
 
+  const chipsPerDollar = game.chipsPerDollar || null;
+
   const rowsHtml = players
     .map((p) => {
       const net = netOf(p);
@@ -666,6 +762,7 @@ function renderRoom() {
         net === null
           ? `<span class="net pending">In play</span>`
           : `<span class="net ${net >= 0 ? "pos" : "neg"}">${moneySigned(net)}</span>`;
+      const chipsNote = chipsPerDollar ? ` · ${Math.round(totalBuyIn(p) * chipsPerDollar)} chips` : "";
       return `
         <div class="row" data-uid="${p.uid}">
           <div class="row-main">
@@ -674,7 +771,7 @@ function renderRoom() {
                 <span class="player-name">${escapeHtml(p.name)}</span>
                 ${p.uid === myUid ? '<span class="you-pill">you</span>' : ""}
               </div>
-              <div class="buyin-line">Buy-in: ${money(totalBuyIn(p))}</div>
+              <div class="buyin-line">Buy-in: ${money(totalBuyIn(p))}${chipsNote}</div>
             </div>
             ${netHtml}
           </div>
@@ -772,18 +869,24 @@ function requestRowHtml(request, myUid) {
 
 function openBuyInSheet(player) {
   const defaultAmount = state.game.defaultBuyIn;
+  const chipsPerDollar = state.game.chipsPerDollar || null;
   openSheet(`
     <h2>Add buy-in for ${escapeHtml(player.name)}</h2>
-    <label class="field-label" for="sheet-amount">Amount</label>
-    <input class="field" id="sheet-amount" type="number" inputmode="decimal" value="${defaultAmount}" min="0" />
+    <label class="field-label">${chipsPerDollar ? "Chips or $" : "Amount"}</label>
+    <div id="amount-input"></div>
     <p class="sheet-error" id="sheet-error"></p>
     <div class="sheet-actions">
       <button class="btn outline" data-close>Cancel</button>
       <button class="btn primary" id="sheet-submit">Add</button>
     </div>
   `);
+  const amountCtl = mountAmountInput(document.getElementById("amount-input"), {
+    chipsPerDollar,
+    initialDollars: defaultAmount,
+    idPrefix: "buyin",
+  });
   document.getElementById("sheet-submit").onclick = async (e) => {
-    const amount = parseFloat(document.getElementById("sheet-amount").value);
+    const amount = amountCtl.getAmount();
     if (!isFinite(amount) || amount <= 0) {
       document.getElementById("sheet-error").textContent = "Enter an amount greater than 0.";
       return;
@@ -800,19 +903,27 @@ function openBuyInSheet(player) {
 }
 
 function openCashOutSheet(player) {
+  const chipsPerDollar = state.game.chipsPerDollar || null;
   openSheet(`
     <h2>Cash out ${escapeHtml(player.name)}</h2>
-    <label class="field-label" for="sheet-amount">Final chip count</label>
-    <input class="field" id="sheet-amount" type="number" inputmode="decimal" min="0" />
-    <p class="sheet-note">Enter the total value of chips they're cashing out with, not the profit or loss.</p>
+    <label class="field-label">${chipsPerDollar ? "Final chip count" : "Final amount"}</label>
+    <div id="amount-input"></div>
+    <p class="sheet-note">Enter the total ${
+      chipsPerDollar ? "chips" : "value"
+    } they're cashing out with, not the profit or loss.</p>
     <p class="sheet-error" id="sheet-error"></p>
     <div class="sheet-actions">
       <button class="btn outline" data-close>Cancel</button>
       <button class="btn primary" id="sheet-submit">Confirm</button>
     </div>
   `);
+  const amountCtl = mountAmountInput(document.getElementById("amount-input"), {
+    chipsPerDollar,
+    initialDollars: "",
+    idPrefix: "cashout",
+  });
   document.getElementById("sheet-submit").onclick = async (e) => {
-    const amount = parseFloat(document.getElementById("sheet-amount").value);
+    const amount = amountCtl.getAmount();
     if (!isFinite(amount) || amount < 0) {
       document.getElementById("sheet-error").textContent = "Enter a valid amount.";
       return;
@@ -848,8 +959,8 @@ function openEditSheet(player) {
         .join("")}
     </div>
     <div id="edit-amount-step" hidden>
-      <label class="field-label" for="sheet-new-amount">New amount</label>
-      <input class="field" id="sheet-new-amount" type="number" inputmode="decimal" min="0" />
+      <label class="field-label">New amount</label>
+      <div id="amount-input"></div>
       <p class="sheet-note">This won't change anything until another player at the table accepts the request.</p>
       <p class="sheet-error" id="sheet-error"></p>
       <div class="sheet-actions">
@@ -863,6 +974,7 @@ function openEditSheet(player) {
 }
 
 function contentSheetItems(items, player) {
+  const chipsPerDollar = state.game.chipsPerDollar || null;
   document.querySelectorAll(".edit-item").forEach((btn) => {
     btn.onclick = () => {
       const item = items[Number(btn.dataset.idx)];
@@ -870,11 +982,14 @@ function contentSheetItems(items, player) {
       document.querySelector(".sheet h2").textContent = `New ${item.label.toLowerCase()} amount`;
       const step = document.getElementById("edit-amount-step");
       step.hidden = false;
-      const amountInput = document.getElementById("sheet-new-amount");
-      amountInput.value = item.amount;
+      const amountCtl = mountAmountInput(document.getElementById("amount-input"), {
+        chipsPerDollar,
+        initialDollars: item.amount,
+        idPrefix: "edit",
+      });
 
       document.getElementById("sheet-submit").onclick = async (e) => {
-        const newAmount = parseFloat(amountInput.value);
+        const newAmount = amountCtl.getAmount();
         if (!isFinite(newAmount) || newAmount < 0) {
           document.getElementById("sheet-error").textContent = "Enter a valid amount.";
           return;

@@ -428,6 +428,36 @@
   }
   .edit-item-amount { color: var(--secondary); font-variant-numeric: tabular-nums; }
 
+  .amount-toggle {
+    display: flex;
+    gap: 0.4rem;
+    width: calc(100% - 1.8rem);
+    margin: 0 auto 0.5rem;
+  }
+  .amount-toggle-btn {
+    flex: 1;
+    padding: 0.45rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--hairline);
+    background: var(--card);
+    color: var(--secondary);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.82rem;
+  }
+  .amount-toggle-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg);
+  }
+  .amount-readout {
+    width: calc(100% - 1.8rem);
+    margin: 0.4rem auto 0;
+    font-size: 0.8rem;
+    color: var(--secondary);
+    min-height: 1.1em;
+  }
+
   .settlement-sheet { max-height: 92vh; }
 </style>
 </head>

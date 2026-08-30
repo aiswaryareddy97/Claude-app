@@ -30,6 +30,15 @@ needed, installable straight from Safari (see "Web app" below).
   request a correction
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
+- **Chip values (optional)** — different games use different chip
+  denominations (a $10 buy-in might hand out chips worth "500"). When
+  hosting, the host can optionally say what a buy-in's chip stack is worth
+  (e.g. "500" chips for a $10 buy-in); everyone can then enter buy-ins and
+  cash-outs as chip counts instead of doing the conversion math, with a
+  live readout of the dollar equivalent. Leave it blank to just use
+  dollars directly, same as before. The host's last-used buy-in and chip
+  value are remembered on their device and pre-filled next time they host
+  — editing them before creating updates what's remembered.
 - **History tab** — past games and your net result, saved on-device
 - **Resume in-progress game** — if the app is killed mid-game, Home offers a
   "Rejoin" shortcut
