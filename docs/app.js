@@ -395,7 +395,20 @@ function mountAmountInput(container, { chipsPerDollar, initialDollars = "", idPr
 
   buttons.forEach((btn) => {
     btn.onclick = () => {
-      mode = btn.dataset.mode;
+      const newMode = btn.dataset.mode;
+      if (newMode === mode) return;
+      // Carry the value over converted into the new unit — otherwise the
+      // field you're switching to keeps whatever stale number it had
+      // before, and submitting from there would silently save that
+      // instead of what you just typed.
+      if (newMode === "dollars") {
+        const chips = parseFloat(chipInput.value);
+        dollarInput.value = isFinite(chips) ? round2(chips / chipsPerDollar) : "";
+      } else {
+        const dollars = parseFloat(dollarInput.value);
+        chipInput.value = isFinite(dollars) ? round2(dollars * chipsPerDollar) : "";
+      }
+      mode = newMode;
       buttons.forEach((b) => b.classList.toggle("active", b === btn));
       chipInput.hidden = mode !== "chips";
       dollarInput.hidden = mode !== "dollars";
@@ -475,6 +488,11 @@ function enterGame(code) {
       clearActiveCode();
       saveHistorySnapshot(game);
       state.showSettlement = true;
+      // If anyone had a buy-in/cash-out/edit sheet open when the game ended,
+      // close it — otherwise it stacks behind the settlement overlay (two
+      // ".sheet" elements at once) and could still silently write to a
+      // game that's already locked in.
+      closeSheet();
     }
     render();
   });
@@ -762,15 +780,19 @@ function openJoinSheet() {
   `);
   document.getElementById("sheet-submit").onclick = async (e) => {
     const button = e.currentTarget;
-    const code = document.getElementById("sheet-code").value;
-    if (!code.trim()) return;
+    const errorEl = document.getElementById("sheet-error");
+    const code = document.getElementById("sheet-code").value.trim();
+    if (!code) {
+      errorEl.textContent = "Enter a game code.";
+      return;
+    }
     button.disabled = true;
     try {
       const game = await joinGame(code, state.uid, state.playerName);
       closeSheet();
       enterGame(game.code);
     } catch (err) {
-      document.getElementById("sheet-error").textContent = err.message;
+      errorEl.textContent = err.message;
       button.disabled = false;
     }
   };
