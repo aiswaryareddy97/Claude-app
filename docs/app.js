@@ -615,7 +615,7 @@ function renderHome() {
       </div>
 
       <label class="field-label" for="name-input">Your name</label>
-      <input class="field" id="name-input" type="text" placeholder="e.g. Alex" value="${escapeHtml(
+      <input class="field" id="name-input" type="text" placeholder="e.g. Alex" maxlength="30" value="${escapeHtml(
         state.playerName
       )}" autocomplete="name" />
 
@@ -671,13 +671,13 @@ function openHostSheet() {
   openSheet(`
     <h2>Host New Game</h2>
     <label class="field-label" for="sheet-game-name">Game name (optional)</label>
-    <input class="field" id="sheet-game-name" type="text" placeholder="Friday Night Poker" />
+    <input class="field" id="sheet-game-name" type="text" placeholder="Friday Night Poker" maxlength="40" />
     <label class="field-label" for="sheet-buyin">Default buy-in ($)</label>
-    <input class="field" id="sheet-buyin" type="number" inputmode="decimal" value="${escapeHtml(lastBuyIn)}" min="0" />
+    <input class="field" id="sheet-buyin" type="number" inputmode="decimal" value="${escapeHtml(lastBuyIn)}" min="0.01" step="0.01" />
     <label class="field-label" for="sheet-chipvalue">Chip value for that buy-in (optional)</label>
     <input class="field" id="sheet-chipvalue" type="number" inputmode="decimal" placeholder="e.g. 500" value="${escapeHtml(
       lastChipValue
-    )}" min="0" />
+    )}" min="0.01" step="0.01" />
     <p class="sheet-note">If a buy-in hands out chips labeled in a different number (like a stack marked "500" for a $20 buy-in), enter that number here — everyone can then enter chip counts at cash-out instead of doing the math. Leave blank to just use dollars. Remembered for next time either way.</p>
     <p class="sheet-error" id="sheet-error"></p>
     <div class="sheet-actions">
@@ -687,12 +687,34 @@ function openHostSheet() {
   `);
   document.getElementById("sheet-submit").onclick = async (e) => {
     const button = e.currentTarget;
-    const name = document.getElementById("sheet-game-name").value;
-    const buyInAmount = parseFloat(document.getElementById("sheet-buyin").value);
-    const defaultBuyIn = isFinite(buyInAmount) && buyInAmount > 0 ? buyInAmount : 20;
+    const errorEl = document.getElementById("sheet-error");
+    errorEl.textContent = "";
+
+    const name = document.getElementById("sheet-game-name").value.trim().slice(0, 40);
+    const buyInRaw = document.getElementById("sheet-buyin").value.trim();
     const chipValueRaw = document.getElementById("sheet-chipvalue").value.trim();
-    const chipValue = chipValueRaw === "" ? null : parseFloat(chipValueRaw);
-    const chipsPerDollar = chipValue && isFinite(chipValue) && chipValue > 0 ? chipValue / defaultBuyIn : null;
+
+    const defaultBuyIn = parseFloat(buyInRaw);
+    if (buyInRaw === "" || !isFinite(defaultBuyIn) || defaultBuyIn <= 0) {
+      errorEl.textContent = "Enter a valid buy-in amount greater than 0.";
+      return;
+    }
+
+    let chipsPerDollar = null;
+    let chipValue = null;
+    if (chipValueRaw !== "") {
+      chipValue = parseFloat(chipValueRaw);
+      if (!isFinite(chipValue) || chipValue <= 0) {
+        errorEl.textContent = "Chip value must be a positive number.";
+        return;
+      }
+      if (chipValue === defaultBuyIn) {
+        errorEl.textContent =
+          "Chip value is the same as the dollar buy-in, so there's nothing to convert — leave it blank instead, or enter the actual chip number if it's different.";
+        return;
+      }
+      chipsPerDollar = chipValue / defaultBuyIn;
+    }
 
     button.disabled = true;
     try {
@@ -706,7 +728,7 @@ function openHostSheet() {
       closeSheet();
       enterGame(game.code);
     } catch (err) {
-      document.getElementById("sheet-error").textContent = err.message;
+      errorEl.textContent = err.message;
       button.disabled = false;
     }
   };
@@ -716,7 +738,7 @@ function openJoinSheet() {
   openSheet(`
     <h2>Join Game</h2>
     <label class="field-label" for="sheet-code">Game code</label>
-    <input class="field" id="sheet-code" type="text" placeholder="e.g. PK4X9" autocapitalize="characters" autocorrect="off" />
+    <input class="field" id="sheet-code" type="text" placeholder="e.g. PK4X9" maxlength="8" autocapitalize="characters" autocorrect="off" />
     <p class="sheet-error" id="sheet-error"></p>
     <div class="sheet-actions">
       <button class="btn outline" data-close>Cancel</button>
