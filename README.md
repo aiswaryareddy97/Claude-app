@@ -25,9 +25,9 @@ needed, installable straight from Safari (see "Web app" below).
 - **Multiple buy-ins per player** (rebuys) — swipe a player row to add one
 - **Cash out** — swipe a player row, enter their final chip count
 - **Edit requests** — correcting an already-recorded buy-in or cash-out
-  (as opposed to entering a brand-new one) needs another player at the
-  table to accept it first; swipe a player row the other direction to
-  request a correction
+  (as opposed to entering a brand-new one): fixing your own entry saves
+  instantly, but correcting someone else's needs another player at the
+  table to accept it first
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
 - **Chip values (optional)** — different games use different chip
@@ -182,14 +182,19 @@ pointed at the same Firebase project.
 ## How edit requests work
 
 Adding a fresh buy-in or a player's first cash-out is instant, same as
-before. Correcting a value that's already been recorded is different: it
-creates a pending `editRequests` document instead of touching the player's
-data directly. Every other phone in the game sees it in a **Pending
-Requests** section; anyone except whoever filed the request can tap Accept
-(which applies the change) or Reject (which just dismisses it). This keeps
-one person from unilaterally rewriting the numbers after the fact, while
-still letting any two people at the table resolve a mistake without
-needing the host specifically.
+before. Correcting a value that's already been recorded depends on whose
+entry it is:
+
+- **Your own entry** — saves immediately, no approval needed. You don't
+  need anyone else's permission to fix your own number.
+- **Someone else's entry** — creates a pending `editRequests` document
+  instead of touching their data directly. Every other phone in the game
+  sees it in a **Pending Requests** section; anyone except whoever filed
+  the request (including the affected player themselves) can tap Accept
+  (which applies the change) or Reject (which just dismisses it).
+
+This keeps one person from unilaterally rewriting *someone else's* numbers
+after the fact, without adding friction to fixing your own typo.
 
 ## Settlement algorithm
 

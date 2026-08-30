@@ -195,6 +195,23 @@ async function requestEdit(code, request) {
   await setDoc(editRequestRef(code, id), data);
 }
 
+// Shared by respondToEditRequest (accept) and applyDirectEdit — applies a
+// buy-in/cash-out correction to a player's raw Firestore data in memory.
+function computeUpdatedPlayerData(data, field, buyInId, newAmount) {
+  const updated = { ...data };
+  if (field === "cashOut") {
+    updated.cashOut = newAmount;
+  } else {
+    const buyIns = [...(data.buyIns || [])];
+    const idx = buyIns.findIndex((b) => b.id === buyInId);
+    if (idx !== -1) {
+      buyIns[idx] = { ...buyIns[idx], amount: newAmount };
+    }
+    updated.buyIns = buyIns;
+  }
+  return updated;
+}
+
 async function respondToEditRequest(code, request, accept, responderUid) {
   const reqRef = editRequestRef(code, request.id);
   if (!accept) {
@@ -210,25 +227,23 @@ async function respondToEditRequest(code, request, accept, responderUid) {
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(pRef);
     if (!snap.exists()) return;
-    const data = snap.data();
-
-    if (request.field === "cashOut") {
-      data.cashOut = request.newAmount;
-    } else {
-      const buyIns = data.buyIns || [];
-      const idx = buyIns.findIndex((b) => b.id === request.buyInId);
-      if (idx !== -1) {
-        buyIns[idx] = { ...buyIns[idx], amount: request.newAmount };
-        data.buyIns = buyIns;
-      }
-    }
-
-    tx.set(pRef, data);
+    tx.set(pRef, computeUpdatedPlayerData(snap.data(), request.field, request.buyInId, request.newAmount));
     tx.update(reqRef, {
       status: "approved",
       resolvedAt: Timestamp.now(),
       resolvedBy: responderUid,
     });
+  });
+}
+
+// Correcting your OWN entry doesn't need anyone else's approval — applies
+// immediately. Correcting someone else's still goes through requestEdit.
+async function applyDirectEdit(code, playerUid, field, buyInId, newAmount) {
+  const pRef = playerRef(code, playerUid);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(pRef);
+    if (!snap.exists()) return;
+    tx.set(pRef, computeUpdatedPlayerData(snap.data(), field, buyInId, newAmount));
   });
 }
 
@@ -962,6 +977,7 @@ function openCashOutSheet(player) {
 }
 
 function openEditSheet(player) {
+  const isOwnEntry = player.uid === state.uid;
   const items = [
     ...player.buyIns.map((b) => ({ label: "Buy-in", amount: b.amount, field: "buyIn", buyInId: b.id })),
     ...(hasCashedOut(player) ? [{ label: "Cash-out", amount: player.cashOut, field: "cashOut", buyInId: null }] : []),
@@ -983,19 +999,23 @@ function openEditSheet(player) {
     <div id="edit-amount-step" hidden>
       <label class="field-label">New amount</label>
       <div id="amount-input"></div>
-      <p class="sheet-note">This won't change anything until another player at the table accepts the request.</p>
+      <p class="sheet-note">${
+        isOwnEntry
+          ? "It's your own entry, so this saves right away — no one else needs to sign off."
+          : "This won't change anything until another player at the table accepts the request."
+      }</p>
       <p class="sheet-error" id="sheet-error"></p>
       <div class="sheet-actions">
         <button class="btn outline" data-close>Cancel</button>
-        <button class="btn primary" id="sheet-submit">Send Request</button>
+        <button class="btn primary" id="sheet-submit">${isOwnEntry ? "Save" : "Send Request"}</button>
       </div>
     </div>
   `);
 
-  contentSheetItems(items, player);
+  contentSheetItems(items, player, isOwnEntry);
 }
 
-function contentSheetItems(items, player) {
+function contentSheetItems(items, player, isOwnEntry) {
   const chipsPerDollar = state.game.chipsPerDollar || null;
   document.querySelectorAll(".edit-item").forEach((btn) => {
     btn.onclick = () => {
@@ -1018,16 +1038,20 @@ function contentSheetItems(items, player) {
         }
         e.currentTarget.disabled = true;
         try {
-          await requestEdit(state.code, {
-            playerUid: player.uid,
-            playerName: player.name,
-            field: item.field,
-            buyInId: item.buyInId,
-            oldAmount: item.amount,
-            newAmount,
-            requestedBy: state.uid,
-            requestedByName: state.playerName,
-          });
+          if (isOwnEntry) {
+            await applyDirectEdit(state.code, player.uid, item.field, item.buyInId, newAmount);
+          } else {
+            await requestEdit(state.code, {
+              playerUid: player.uid,
+              playerName: player.name,
+              field: item.field,
+              buyInId: item.buyInId,
+              oldAmount: item.amount,
+              newAmount,
+              requestedBy: state.uid,
+              requestedByName: state.playerName,
+            });
+          }
           closeSheet();
         } catch (err) {
           document.getElementById("sheet-error").textContent = err.message;
