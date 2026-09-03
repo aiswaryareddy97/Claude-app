@@ -61,8 +61,17 @@ needed, installable straight from Safari (see "Web app" below).
   opening the link) launches the app straight into Join Game with the code
   already filled in — no typing a 5-character code by hand.
 - **Saved regular players** — names the host has manually added before show
-  up as quick-tap chips next time they add a player, so a recurring table
-  doesn't mean retyping the same names every week.
+  up as a checklist next time they add a player, so a recurring table can
+  be added a few people at once instead of retyping names one at a time
+  every week.
+- **Rebuy, distinct from Buy-in** — once a player has a first buy-in
+  recorded, their next one is labeled "Rebuy" instead of "Buy-in"
+  (same underlying action) so the activity log and sheets read the way
+  the table actually talks.
+- **Live buy-in/cash-out mismatch warning** — once everyone's cashed out
+  but before the host taps End Game, a banner flags it if the totals
+  don't match (same check as End Game's own warning, just visible
+  earlier instead of only in a confirm dialog).
 - **Activity log** — a collapsible, real-time list of who did what (buy-ins,
   cash-outs, corrections, players added/removed, host transfers, settings
   changes) with a timestamp for each. It's the non-host viewers' only
