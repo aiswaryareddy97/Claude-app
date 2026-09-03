@@ -37,8 +37,8 @@ needed, installable straight from Safari (see "Web app" below).
   while they have zero buy-ins recorded — once real money is tracked for
   them, they can't just be removed
 - **Multiple buy-ins per player** (rebuys) and **cash out**, both host-only
-- **Edit** an already-recorded buy-in or cash-out (host only, instant —
-  see "Host-only controls")
+- **Edit** a player's name, or an already-recorded buy-in or cash-out
+  (host only, instant — see "Host-only controls")
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
 - **Chip values (optional)** — different games use different chip
