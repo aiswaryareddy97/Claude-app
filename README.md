@@ -50,9 +50,44 @@ needed, installable straight from Safari (see "Web app" below).
   dollars directly, same as before. The host's last-used buy-in and chip
   value are remembered on their device and pre-filled next time they host
   — editing them before creating updates what's remembered.
-- **History tab** — past games and your net result, saved on-device
+- **Invite sheet with QR code** — tap the game code in the top bar to get a
+  QR code, a shareable link, and copy/share buttons. Scanning the code (or
+  opening the link) launches the app straight into Join Game with the code
+  already filled in — no typing a 5-character code by hand.
+- **Saved regular players** — names the host has manually added before show
+  up as quick-tap chips next time they add a player, so a recurring table
+  doesn't mean retyping the same names every week.
+- **Activity log** — a collapsible, real-time list of who did what (buy-ins,
+  cash-outs, corrections, players added/removed, host transfers, settings
+  changes) with a timestamp for each. It's the non-host viewers' only
+  window into *why* something changed, since they can't cause changes
+  themselves.
+- **Edit Game Settings** (host only) — change the game's name, default
+  buy-in, or chip value after creation, from the gear icon in the top bar.
+  Only affects buy-ins entered from then on.
+- **Transfer Host** (host only) — hand hosting off to another player
+  already in the game, from Game Settings. Useful if the original host has
+  to step away mid-game.
+- **Delete Game** (host only) — permanently remove a game and everyone in
+  it, from Game Settings. A manual substitute for automatic cleanup of
+  abandoned games (which would need a paid Cloud Functions plan).
+- **Undo End Game** — if "End Game & Settle Up" was tapped by mistake, the
+  host can reopen the game from the ended screen; it goes back to active
+  and the stale settlement snapshot is discarded.
+- **Optional blinds timer** — the host can start a shared, live-updating
+  round timer (minutes per round + starting small blind, blinds double
+  each round) that every device displays in sync, computed locally from a
+  single start timestamp rather than ticking over the network.
+- **Share Results** — from the settlement screen, share (or copy) a
+  plain-text summary of everyone's net result and who owes who.
+- **History tab** — past games and your net result, saved on-device, plus
+  lifetime totals (games played, overall net, win/loss record, best night)
+  across everything saved locally.
 - **Resume in-progress game** — if the app is killed mid-game, Home offers a
   "Rejoin" shortcut
+- **Offline resilience** — the web app caches Firestore data locally, so a
+  spotty connection at the poker table doesn't lose in-progress edits; they
+  sync once the connection's back.
 
 ## Project layout
 
@@ -148,11 +183,14 @@ Web SDK. It's what's actually running if you added this site to your
 iPhone's home screen via Safari — install it once and future pushes to
 `docs/` update it automatically.
 
-- `docs/index.html` — page shell + all CSS
+- `docs/index.html` — page shell + all CSS, plus a CDN `<script>` tag for
+  the `qrcode-generator` library used by the Invite sheet's QR code
 - `docs/app.js` — everything else: Firebase init/auth, game/player
   operations (`createGame`, `joinGame`, `addManualPlayer`, `deletePlayer`,
-  `addBuyIn`, `setCashOut`, `editPlayerEntry`, `endGame`), the settlement
-  algorithm, and localStorage-based history
+  `renamePlayer`, `addBuyIn`, `setCashOut`, `editPlayerEntry`, `endGame`,
+  `reopenGame`, `updateGameSettings`, `transferHost`, `deleteGame`,
+  `startTimer`/`resetTimer`, `logActivity`), the settlement algorithm, and
+  localStorage-based history and saved-player-name lists
 - `docs/firebase-config.js` — the only file you need to edit to connect it
   to your backend
 - `docs/manifest.json` + icon PNGs — makes it installable
@@ -210,12 +248,18 @@ Two things follow from that:
   served a purpose once only one person can write at all.)
 - **Adding a player without their own device** starts them with *zero*
   buy-ins — the host records their first buy-in as a separate step. That's
-  what makes **Delete Player** meaningful: it's only allowed while a
-  player has no buy-ins and hasn't cashed out, so it's specifically an
-  "undo a mistake" action, not a way to erase someone's money mid-game.
-  A player who *joins themselves* via the code always arrives with their
-  first buy-in already recorded (same as before), so in practice they're
-  essentially never delete-eligible — which is the point.
+  what makes **Delete Player** meaningful in the UI: the button only shows
+  up while a player has no buy-ins and hasn't cashed out, so it reads as an
+  "undo a mistake" action rather than a way to erase someone's money
+  mid-game. A player who *joins themselves* via the code always arrives
+  with their first buy-in already recorded, so in practice they're
+  essentially never delete-eligible — which is the point. This particular
+  restriction is UI-level accident prevention, not a security boundary: the
+  host can already edit or zero out any buy-in/cash-out, so the security
+  rules only require that the request come from the host, the same as
+  every other write. **Delete Game** relies on that — it needs to remove
+  every player regardless of buy-ins as part of tearing down the whole
+  game.
 
 One known rough edge: if the host manually adds someone and that person
 *also* later joins themselves with the code, they end up as two separate
@@ -232,8 +276,11 @@ everyone is settled — this minimizes the number of payments needed.
 
 ## Ideas for a v2
 
-- QR code join (scan instead of typing the code)
+- Venmo/PayPal deep links on the settlement screen, so a payment starts
+  pre-filled straight from "who pays who"
 - Push notifications when someone joins or cashes out
 - Sign in with Apple so history follows you across devices/reinstalls
 - Let players self-report buy-ins with a per-player PIN instead of open
   table-wide editing
+- Automatic cleanup of abandoned games (needs a paid Cloud Functions plan;
+  **Delete Game** is the manual stand-in for now)
