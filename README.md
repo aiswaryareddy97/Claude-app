@@ -26,6 +26,12 @@ needed, installable straight from Safari (see "Web app" below).
 
 ## Features
 
+- **Felt & Brass theme** — a dark, casino-table look (deep felt green, brass
+  gold accents) instead of a generic light UI. Player rows get a
+  chip-colored avatar (initials, one of five poker-chip denomination
+  colors picked deterministically per player) so who's who reads at a
+  glance, and the live game status dot pulses gently while the game's
+  active.
 - **Host New Game** → generates a unique 5-character game code (e.g. `PK4X9`)
 - **Join Game** → enter the code to watch the game live, synced via Firestore
 - **Host-only controls** — only the host records buy-ins, cash-outs, and
@@ -74,10 +80,6 @@ needed, installable straight from Safari (see "Web app" below).
 - **Undo End Game** — if "End Game & Settle Up" was tapped by mistake, the
   host can reopen the game from the ended screen; it goes back to active
   and the stale settlement snapshot is discarded.
-- **Optional blinds timer** — the host can start a shared, live-updating
-  round timer (minutes per round + starting small blind, blinds double
-  each round) that every device displays in sync, computed locally from a
-  single start timestamp rather than ticking over the network.
 - **Share Results** — from the settlement screen, share (or copy) a
   plain-text summary of everyone's net result and who owes who.
 - **History tab** — past games and your net result, saved on-device, plus
@@ -189,8 +191,8 @@ iPhone's home screen via Safari — install it once and future pushes to
   operations (`createGame`, `joinGame`, `addManualPlayer`, `deletePlayer`,
   `renamePlayer`, `addBuyIn`, `setCashOut`, `editPlayerEntry`, `endGame`,
   `reopenGame`, `updateGameSettings`, `transferHost`, `deleteGame`,
-  `startTimer`/`resetTimer`, `logActivity`), the settlement algorithm, and
-  localStorage-based history and saved-player-name lists
+  `logActivity`), the settlement algorithm, and localStorage-based history
+  and saved-player-name lists
 - `docs/firebase-config.js` — the only file you need to edit to connect it
   to your backend
 - `docs/manifest.json` + icon PNGs — makes it installable
