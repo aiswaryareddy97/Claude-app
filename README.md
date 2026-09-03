@@ -11,6 +11,12 @@ real-time sync across everyone's phones. There's also a functional plain
 HTML/JS web version under `docs/` — same backend, no Xcode or App Store
 needed, installable straight from Safari (see "Web app" below).
 
+> **The web app (`docs/`) is the actively developed version.** Several
+> rounds of changes — chip values, host-only controls — have landed there
+> without being ported back to the Swift project, which still reflects an
+> earlier "anyone at the table can record buy-ins" design. Treat
+> `PokerTracker/` as a reference/starting point rather than up to date.
+
 > **Note:** this was generated in a Linux cloud environment without Xcode, so
 > the Swift code has not been compiled. Open it in Xcode and fix anything the
 > compiler flags — the structure and logic below should get you most of the
@@ -21,13 +27,18 @@ needed, installable straight from Safari (see "Web app" below).
 ## Features
 
 - **Host New Game** → generates a unique 5-character game code (e.g. `PK4X9`)
-- **Join Game** → enter the code to join instantly, live-synced via Firestore
-- **Multiple buy-ins per player** (rebuys) — swipe a player row to add one
-- **Cash out** — swipe a player row, enter their final chip count
-- **Edit requests** — correcting an already-recorded buy-in or cash-out
-  (as opposed to entering a brand-new one): fixing your own entry saves
-  instantly, but correcting someone else's needs another player at the
-  table to accept it first
+- **Join Game** → enter the code to watch the game live, synced via Firestore
+- **Host-only controls** — only the host records buy-ins, cash-outs, and
+  corrections; everyone else who joins by code sees it all update live but
+  can't edit anything (see "Host-only controls" below)
+- **Add Player** (host only) — add someone who doesn't have or want the
+  app; the host records their buy-ins and cash-out like anyone else's
+- **Delete Player** (host only) — undo adding the wrong person, but only
+  while they have zero buy-ins recorded — once real money is tracked for
+  them, they can't just be removed
+- **Multiple buy-ins per player** (rebuys) and **cash out**, both host-only
+- **Edit** an already-recorded buy-in or cash-out (host only, instant —
+  see "Host-only controls")
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
 - **Chip values (optional)** — different games use different chip
@@ -92,9 +103,11 @@ Then go to the **Rules** tab and paste in the contents of `firestore.rules`
 from this repo, and publish. These rules ensure:
 - only signed-in users can read/write
 - only the person who created a game can end it
-- you can only create your own player entry (but any participant can record
-  buy-ins/cash-outs at the table, since one person is usually running the
-  chip counts)
+- you can join yourself, or the host can add anyone (including a player
+  without their own device)
+- only the host can record buy-ins, cash-outs, and corrections
+- only the host can remove a player, and only before any money has been
+  recorded for them — enforced server-side, not just in the UI
 
 ### 4. Install XcodeGen and generate the Xcode project
 
@@ -136,11 +149,10 @@ iPhone's home screen via Safari — install it once and future pushes to
 `docs/` update it automatically.
 
 - `docs/index.html` — page shell + all CSS
-- `docs/app.js` — everything else: Firebase init/auth, the same
-  `createGame`/`joinGame`/`addBuyIn`/`setCashOut`/`endGame`/`requestEdit`/
-  `respondToEditRequest` operations as `GameService.swift`, the same
-  settlement algorithm, and localStorage-based history (in place of
-  `UserDefaults`)
+- `docs/app.js` — everything else: Firebase init/auth, game/player
+  operations (`createGame`, `joinGame`, `addManualPlayer`, `deletePlayer`,
+  `addBuyIn`, `setCashOut`, `editPlayerEntry`, `endGame`), the settlement
+  algorithm, and localStorage-based history
 - `docs/firebase-config.js` — the only file you need to edit to connect it
   to your backend
 - `docs/manifest.json` + icon PNGs — makes it installable
@@ -179,22 +191,37 @@ pointed at the same Firebase project.
   subcollection in real time, so buy-ins and cash-outs appear on all phones
   within a second or two.
 
-## How edit requests work
+## Host-only controls
 
-Adding a fresh buy-in or a player's first cash-out is instant, same as
-before. Correcting a value that's already been recorded depends on whose
-entry it is:
+Only the host can write anything — add a buy-in, cash someone out, correct
+an existing entry, add or remove a player, or end the game. Everyone else
+who joins with the code is view-only: they watch the same live board (name,
+buy-in totals, net, settlement once it's done) but never see an action
+button. This is enforced twice — the UI simply doesn't render those
+controls for non-hosts, and the Firestore rules independently reject any
+write that isn't from the host, so it holds even against a modified client.
 
-- **Your own entry** — saves immediately, no approval needed. You don't
-  need anyone else's permission to fix your own number.
-- **Someone else's entry** — creates a pending `editRequests` document
-  instead of touching their data directly. Every other phone in the game
-  sees it in a **Pending Requests** section; anyone except whoever filed
-  the request (including the affected player themselves) can tap Accept
-  (which applies the change) or Reject (which just dismisses it).
+Two things follow from that:
 
-This keeps one person from unilaterally rewriting *someone else's* numbers
-after the fact, without adding friction to fixing your own typo.
+- **Corrections are instant.** There's no one else who could have written
+  a value in the first place, so there's nothing to get a second opinion
+  on — the host taps Edit, picks the entry, saves. (Earlier versions had a
+  co-player approval flow for this; it's been removed since it no longer
+  served a purpose once only one person can write at all.)
+- **Adding a player without their own device** starts them with *zero*
+  buy-ins — the host records their first buy-in as a separate step. That's
+  what makes **Delete Player** meaningful: it's only allowed while a
+  player has no buy-ins and hasn't cashed out, so it's specifically an
+  "undo a mistake" action, not a way to erase someone's money mid-game.
+  A player who *joins themselves* via the code always arrives with their
+  first buy-in already recorded (same as before), so in practice they're
+  essentially never delete-eligible — which is the point.
+
+One known rough edge: if the host manually adds someone and that person
+*also* later joins themselves with the code, they end up as two separate
+rows (different underlying IDs) rather than merging into one. Not handled
+today — if it comes up, delete the empty manual placeholder before the
+real join happens.
 
 ## Settlement algorithm
 

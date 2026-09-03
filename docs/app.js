@@ -11,11 +11,10 @@ import {
   getDoc,
   setDoc,
   updateDoc,
+  deleteDoc,
   collection,
   getDocs,
   onSnapshot,
-  query,
-  where,
   runTransaction,
   arrayUnion,
   Timestamp,
@@ -65,8 +64,6 @@ function generateCode(length = 5) {
 const gameRef = (code) => doc(db, "games", code);
 const playersRef = (code) => collection(db, "games", code, "players");
 const playerRef = (code, uid) => doc(db, "games", code, "players", uid);
-const editRequestsRef = (code) => collection(db, "games", code, "editRequests");
-const editRequestRef = (code, id) => doc(db, "games", code, "editRequests", id);
 
 // ---------------------------------------------------------------------
 // Game service — mirrors PokerTracker/Services/GameService.swift
@@ -127,6 +124,28 @@ async function joinGame(code, uid, name) {
   return { ...game, code: upperCode };
 }
 
+// Host adds someone who doesn't have (or doesn't want to use) the app.
+// Starts with no buy-in yet — the host records it as a separate step —
+// which is what makes deletePlayer's "undo a mistake" window meaningful.
+async function addManualPlayer(code, name, hostUid) {
+  const id = `manual-${crypto.randomUUID()}`;
+  await setDoc(playerRef(code, id), {
+    uid: id,
+    name,
+    buyIns: [],
+    joinedAt: Timestamp.now(),
+    addedBy: hostUid,
+  });
+  return id;
+}
+
+// Only allowed (client-side and by the security rules) while the player
+// has no buy-ins and hasn't cashed out — otherwise deleting them would
+// silently erase real money from the settlement.
+async function deletePlayer(code, uid) {
+  await deleteDoc(playerRef(code, uid));
+}
+
 async function fetchGameWithPlayers(code) {
   const upperCode = code.toUpperCase();
   const snap = await getDoc(gameRef(upperCode));
@@ -154,16 +173,6 @@ function listenToPlayers(code, onChange) {
   });
 }
 
-function listenToEditRequests(code, onChange) {
-  const q = query(editRequestsRef(code), where("status", "==", "pending"));
-  return onSnapshot(q, (snap) => {
-    const requests = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0));
-    onChange(requests);
-  });
-}
-
 async function addBuyIn(code, uid, amount) {
   await updateDoc(playerRef(code, uid), {
     buyIns: arrayUnion({ id: crypto.randomUUID(), amount, timestamp: Timestamp.now() }),
@@ -178,25 +187,8 @@ async function endGame(code) {
   await updateDoc(gameRef(code), { status: "ended", endedAt: Timestamp.now() });
 }
 
-async function requestEdit(code, request) {
-  const id = crypto.randomUUID();
-  const data = {
-    playerUid: request.playerUid,
-    playerName: request.playerName,
-    field: request.field,
-    oldAmount: request.oldAmount,
-    newAmount: request.newAmount,
-    requestedBy: request.requestedBy,
-    requestedByName: request.requestedByName,
-    status: "pending",
-    createdAt: Timestamp.now(),
-  };
-  if (request.buyInId) data.buyInId = request.buyInId;
-  await setDoc(editRequestRef(code, id), data);
-}
-
-// Shared by respondToEditRequest (accept) and applyDirectEdit — applies a
-// buy-in/cash-out correction to a player's raw Firestore data in memory.
+// Applies a buy-in/cash-out correction to a player's raw Firestore data in
+// memory — shared by editPlayerEntry below.
 function computeUpdatedPlayerData(data, field, buyInId, newAmount) {
   const updated = { ...data };
   if (field === "cashOut") {
@@ -212,33 +204,11 @@ function computeUpdatedPlayerData(data, field, buyInId, newAmount) {
   return updated;
 }
 
-async function respondToEditRequest(code, request, accept, responderUid) {
-  const reqRef = editRequestRef(code, request.id);
-  if (!accept) {
-    await updateDoc(reqRef, {
-      status: "rejected",
-      resolvedAt: Timestamp.now(),
-      resolvedBy: responderUid,
-    });
-    return;
-  }
-
-  const pRef = playerRef(code, request.playerUid);
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(pRef);
-    if (!snap.exists()) return;
-    tx.set(pRef, computeUpdatedPlayerData(snap.data(), request.field, request.buyInId, request.newAmount));
-    tx.update(reqRef, {
-      status: "approved",
-      resolvedAt: Timestamp.now(),
-      resolvedBy: responderUid,
-    });
-  });
-}
-
-// Correcting your OWN entry doesn't need anyone else's approval — applies
-// immediately. Correcting someone else's still goes through requestEdit.
-async function applyDirectEdit(code, playerUid, field, buyInId, newAmount) {
+// Only the host can open the Edit sheet at all (row actions are host-gated),
+// so a correction here always applies immediately — no approval needed
+// since there's no one else who could have written the value in the first
+// place.
+async function editPlayerEntry(code, playerUid, field, buyInId, newAmount) {
   const pRef = playerRef(code, playerUid);
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(pRef);
@@ -441,13 +411,11 @@ const state = {
   code: null,
   game: null,
   players: [],
-  editRequests: [],
   resumeCode: null,
   error: null,
   busy: false,
   unsubGame: null,
   unsubPlayers: null,
-  unsubRequests: null,
   historyEntries: [],
   historyDetail: null,
   showSettlement: false,
@@ -469,10 +437,8 @@ function setError(message) {
 function detachGameListeners() {
   state.unsubGame?.();
   state.unsubPlayers?.();
-  state.unsubRequests?.();
   state.unsubGame = null;
   state.unsubPlayers = null;
-  state.unsubRequests = null;
 }
 
 function enterGame(code) {
@@ -500,10 +466,6 @@ function enterGame(code) {
     state.players = players;
     render();
   });
-  state.unsubRequests = listenToEditRequests(code, (requests) => {
-    state.editRequests = requests;
-    render();
-  });
 
   render();
 }
@@ -515,7 +477,6 @@ function leaveGame() {
   state.code = null;
   state.game = null;
   state.players = [];
-  state.editRequests = [];
   state.showSettlement = false;
   if (wasActive && leavingCode) {
     state.resumeCode = leavingCode;
@@ -804,13 +765,7 @@ function renderRoom() {
   const myUid = state.uid;
   const isHost = game.hostId === myUid;
   const active = game.status === "active";
-
-  const requestsHtml = state.editRequests.length
-    ? `<div class="section-label">Pending Requests</div>
-       <div class="card-list">
-         ${state.editRequests.map((r) => requestRowHtml(r, myUid)).join("")}
-       </div>`
-    : "";
+  const hostName = players.find((p) => p.uid === game.hostId)?.name;
 
   const chipsPerDollar = game.chipsPerDollar || null;
 
@@ -822,6 +777,7 @@ function renderRoom() {
           ? `<span class="net pending">In play</span>`
           : `<span class="net ${net >= 0 ? "pos" : "neg"}">${moneySigned(net)}</span>`;
       const chipsNote = chipsPerDollar ? ` · ${Math.round(totalBuyIn(p) * chipsPerDollar)} chips` : "";
+      const deletable = active && isHost && p.buyIns.length === 0 && !hasCashedOut(p);
       return `
         <div class="row" data-uid="${p.uid}">
           <div class="row-main">
@@ -835,7 +791,7 @@ function renderRoom() {
             ${netHtml}
           </div>
           ${
-            active
+            active && isHost
               ? `<div class="row-actions">
                    <button class="row-action-btn" data-action="buyin" data-uid="${p.uid}">+ Buy-in</button>
                    ${!hasCashedOut(p) ? `<button class="row-action-btn" data-action="cashout" data-uid="${p.uid}">✓ Cash out</button>` : ""}
@@ -844,6 +800,7 @@ function renderRoom() {
                        ? `<button class="row-action-btn ghost" data-action="edit" data-uid="${p.uid}">✎ Edit</button>`
                        : ""
                    }
+                   ${deletable ? `<button class="row-action-btn danger" data-action="delete" data-uid="${p.uid}">🗑 Delete</button>` : ""}
                  </div>`
               : ""
           }
@@ -857,12 +814,11 @@ function renderRoom() {
     <div class="room">
       <div class="game-status">
         <span class="status-dot ${active ? "live" : ""}"></span>
-        ${active ? "Game in progress" : "Game ended"}
+        ${active ? "Game in progress" : "Game ended"}${hostName ? ` · Hosted by ${escapeHtml(hostName)}` : ""}
       </div>
 
-      ${requestsHtml}
-
       <div class="section-label">Players (${players.length})</div>
+      ${isHost && active ? `<button class="btn outline" id="btn-add-player">+ Add Player</button>` : ""}
       <div class="card-list">${rowsHtml}</div>
 
       ${state.error ? `<p class="error-text">${escapeHtml(state.error)}</p>` : ""}
@@ -885,6 +841,17 @@ function renderRoom() {
   contentEl.querySelectorAll('[data-action="edit"]').forEach((btn) => {
     btn.onclick = () => openEditSheet(players.find((p) => p.uid === btn.dataset.uid));
   });
+  contentEl.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+    btn.onclick = () => {
+      const player = players.find((p) => p.uid === btn.dataset.uid);
+      if (!player) return;
+      if (confirm(`Remove ${player.name} from the game?`)) {
+        deletePlayer(state.code, player.uid).catch((err) => setError(err.message));
+      }
+    };
+  });
+
+  document.getElementById("btn-add-player")?.addEventListener("click", openAddPlayerSheet);
 
   document.getElementById("btn-end")?.addEventListener("click", () => {
     if (stillIn.length > 0) {
@@ -906,24 +873,34 @@ function renderRoom() {
   }
 }
 
-function requestRowHtml(request, myUid) {
-  const fieldLabel = request.field === "buyIn" ? "buy-in" : "cash-out";
-  const text = `${escapeHtml(request.requestedByName)} wants to change ${escapeHtml(
-    request.playerName
-  )}'s ${fieldLabel} from ${money(request.oldAmount)} to ${money(request.newAmount)}`;
-  if (request.requestedBy === myUid) {
-    return `<div class="request-card">
-      <div class="request-text">${text}</div>
-      <div class="request-waiting">Waiting for another player to accept…</div>
-    </div>`;
-  }
-  return `<div class="request-card">
-    <div class="request-text">${text}</div>
-    <div class="request-actions">
-      <button class="pill-btn accept" data-request="${request.id}" data-accept="true">Accept</button>
-      <button class="pill-btn reject" data-request="${request.id}" data-accept="false">Reject</button>
+function openAddPlayerSheet() {
+  openSheet(`
+    <h2>Add Player</h2>
+    <label class="field-label" for="sheet-player-name">Name</label>
+    <input class="field" id="sheet-player-name" type="text" placeholder="e.g. Sam" maxlength="30" />
+    <p class="sheet-note">They won't need the app — you'll record their buy-ins and cash-out for them, same as anyone else at the table.</p>
+    <p class="sheet-error" id="sheet-error"></p>
+    <div class="sheet-actions">
+      <button class="btn outline" data-close>Cancel</button>
+      <button class="btn primary" id="sheet-submit">Add</button>
     </div>
-  </div>`;
+  `);
+  document.getElementById("sheet-submit").onclick = async (e) => {
+    const errorEl = document.getElementById("sheet-error");
+    const name = document.getElementById("sheet-player-name").value.trim();
+    if (!name) {
+      errorEl.textContent = "Enter a name.";
+      return;
+    }
+    e.currentTarget.disabled = true;
+    try {
+      await addManualPlayer(state.code, name, state.uid);
+      closeSheet();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      e.currentTarget.disabled = false;
+    }
+  };
 }
 
 function openBuyInSheet(player) {
@@ -999,7 +976,6 @@ function openCashOutSheet(player) {
 }
 
 function openEditSheet(player) {
-  const isOwnEntry = player.uid === state.uid;
   const items = [
     ...player.buyIns.map((b) => ({ label: "Buy-in", amount: b.amount, field: "buyIn", buyInId: b.id })),
     ...(hasCashedOut(player) ? [{ label: "Cash-out", amount: player.cashOut, field: "cashOut", buyInId: null }] : []),
@@ -1021,23 +997,18 @@ function openEditSheet(player) {
     <div id="edit-amount-step" hidden>
       <label class="field-label">New amount</label>
       <div id="amount-input"></div>
-      <p class="sheet-note">${
-        isOwnEntry
-          ? "It's your own entry, so this saves right away — no one else needs to sign off."
-          : "This won't change anything until another player at the table accepts the request."
-      }</p>
       <p class="sheet-error" id="sheet-error"></p>
       <div class="sheet-actions">
         <button class="btn outline" data-close>Cancel</button>
-        <button class="btn primary" id="sheet-submit">${isOwnEntry ? "Save" : "Send Request"}</button>
+        <button class="btn primary" id="sheet-submit">Save</button>
       </div>
     </div>
   `);
 
-  contentSheetItems(items, player, isOwnEntry);
+  contentSheetItems(items, player);
 }
 
-function contentSheetItems(items, player, isOwnEntry) {
+function contentSheetItems(items, player) {
   const chipsPerDollar = state.game.chipsPerDollar || null;
   document.querySelectorAll(".edit-item").forEach((btn) => {
     btn.onclick = () => {
@@ -1060,20 +1031,7 @@ function contentSheetItems(items, player, isOwnEntry) {
         }
         e.currentTarget.disabled = true;
         try {
-          if (isOwnEntry) {
-            await applyDirectEdit(state.code, player.uid, item.field, item.buyInId, newAmount);
-          } else {
-            await requestEdit(state.code, {
-              playerUid: player.uid,
-              playerName: player.name,
-              field: item.field,
-              buyInId: item.buyInId,
-              oldAmount: item.amount,
-              newAmount,
-              requestedBy: state.uid,
-              requestedByName: state.playerName,
-            });
-          }
+          await editPlayerEntry(state.code, player.uid, item.field, item.buyInId, newAmount);
           closeSheet();
         } catch (err) {
           document.getElementById("sheet-error").textContent = err.message;
@@ -1226,20 +1184,6 @@ function openSheet(innerHtml) {
 function closeSheet() {
   document.getElementById("active-overlay")?.remove();
 }
-
-// ---------------------------------------------------------------------
-// Delegated click handler for request accept/reject (rows re-render often)
-// ---------------------------------------------------------------------
-
-document.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-request]");
-  if (!btn) return;
-  const request = state.editRequests.find((r) => r.id === btn.dataset.request);
-  if (!request) return;
-  const accept = btn.dataset.accept === "true";
-  btn.disabled = true;
-  respondToEditRequest(state.code, request, accept, state.uid).catch((err) => setError(err.message));
-});
 
 // ---------------------------------------------------------------------
 // Boot

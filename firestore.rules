@@ -12,27 +12,20 @@ service cloud.firestore {
 
       match /players/{playerId} {
         allow read: if request.auth != null;
-        // You can only create your own player entry when you join.
-        allow create: if request.auth != null && request.auth.uid == playerId;
-        // Any signed-in participant can record a new buy-in / first cash-out at the
-        // table (one person is usually running the chip counts). Correcting an
-        // already-recorded amount instead goes through editRequests below.
-        allow update: if request.auth != null;
-        allow delete: if false;
-      }
-
-      match /editRequests/{requestId} {
-        allow read: if request.auth != null;
-        // You can only file a request under your own name, and it starts pending.
+        // You can join yourself, or the host can add anyone — including a
+        // player without their own device, under a generated ID.
         allow create: if request.auth != null
-                      && request.resource.data.requestedBy == request.auth.uid
-                      && request.resource.data.status == 'pending';
-        // Resolving (accept/reject) requires a different player than whoever
-        // filed it, and only while it's still pending.
+                      && (request.auth.uid == playerId
+                          || request.auth.uid == get(/databases/$(database)/documents/games/$(gameCode)).data.hostId);
+        // Only the host records buy-ins, cash-outs, and corrections.
         allow update: if request.auth != null
-                      && resource.data.status == 'pending'
-                      && request.auth.uid != resource.data.requestedBy;
-        allow delete: if false;
+                      && request.auth.uid == get(/databases/$(database)/documents/games/$(gameCode)).data.hostId;
+        // Only the host can remove a player, and only before any money has
+        // actually been recorded for them.
+        allow delete: if request.auth != null
+                      && request.auth.uid == get(/databases/$(database)/documents/games/$(gameCode)).data.hostId
+                      && resource.data.buyIns.size() == 0
+                      && !('cashOut' in resource.data);
       }
     }
   }
