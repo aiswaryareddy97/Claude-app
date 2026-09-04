@@ -51,15 +51,18 @@ needed, installable straight from Safari (see "Web app" below).
   (host only, instant — see "Host-only controls")
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
-- **Chip values (optional)** — different games use different chip
-  denominations (a $10 buy-in might hand out chips worth "500"). When
-  hosting, the host can optionally say what a buy-in's chip stack is worth
-  (e.g. "500" chips for a $10 buy-in); everyone can then enter buy-ins and
+- **Chip values** — different games use different chip denominations (a
+  $10 buy-in might hand out chips worth "500"), so hosting a new game
+  requires both the dollar buy-in and what its chip stack is worth (e.g.
+  "500" chips for a $10 buy-in); everyone can then enter buy-ins and
   cash-outs as chip counts instead of doing the conversion math, with a
-  live readout of the dollar equivalent. Leave it blank to just use
-  dollars directly, same as before. The host's last-used buy-in and chip
-  value are remembered on their device and pre-filled next time they host
-  — editing them before creating updates what's remembered.
+  live readout of the dollar equivalent. The host's last-used buy-in and
+  chip value are remembered on their device and pre-filled next time they
+  host, and the amount fields elsewhere (buy-in, cash-out, edit) show a
+  placeholder example scaled to that game's actual buy-in and chip
+  value instead of a generic number. (Games created before this was
+  required may still have no chip value at all — those keep working in
+  plain dollars, only new games require it.)
 - **Invite sheet with QR code** — tap the game code in the top bar to get a
   QR code, a shareable link, and copy/share buttons. Scanning the code (or
   opening the link) launches the app straight into Join Game with the code
