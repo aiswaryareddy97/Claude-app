@@ -42,8 +42,12 @@ needed, installable straight from Safari (see "Web app" below).
 - **Delete Player** (host only) — undo adding the wrong person, but only
   while they have zero buy-ins recorded — once real money is tracked for
   them, they can't just be removed
-- **Multiple buy-ins per player** (rebuys) and **cash out**, both host-only
-- **Edit** a player's name, or an already-recorded buy-in or cash-out
+- **Multiple buy-ins and cash-outs per player** (rebuys, and cashing out
+  more than once) — both host-only. Cash Out never locks a player out of
+  further action: they can rebuy and play again, then cash out again,
+  as many cycles as the night calls for. Net is the running total of
+  everything they've cashed out minus everything they've bought in.
+- **Edit** a player's name, or any already-recorded buy-in or cash-out
   (host only, instant — see "Host-only controls")
 - **End Game & Settle Up** (host only) — locks the game and computes who
   owes who, minimizing the number of payments
@@ -69,9 +73,10 @@ needed, installable straight from Safari (see "Web app" below).
   (same underlying action) so the activity log and sheets read the way
   the table actually talks.
 - **Live buy-in/cash-out mismatch warning** — once everyone's cashed out
-  but before the host taps End Game, a banner flags it if the totals
-  don't match (same check as End Game's own warning, just visible
-  earlier instead of only in a confirm dialog).
+  at least once, a banner flags it if the totals don't match (same check
+  End Game itself runs when actually tapped — this is the same warning,
+  just visible earlier too). End Game is never blocked on it; it's a
+  nudge to double-check, not a gate.
 - **Activity log** — a collapsible, real-time list of who did what (buy-ins,
   cash-outs, corrections, players added/removed, host transfers, settings
   changes) with a timestamp for each. It's the non-host viewers' only
