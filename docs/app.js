@@ -1006,6 +1006,9 @@ function openPlayerIdSheet() {
   };
 
   document.getElementById("btn-restore-player-id").onclick = async (e) => {
+    // Captured up front: e.currentTarget is null once the event
+    // finishes dispatching, which is before any await below resumes.
+    const button = e.currentTarget;
     const errorEl = document.getElementById("sheet-error");
     const entered = document.getElementById("restore-player-id").value.trim().toUpperCase();
     if (!entered) {
@@ -1016,11 +1019,11 @@ function openPlayerIdSheet() {
       errorEl.textContent = "That's already the ID this phone is using.";
       return;
     }
-    e.currentTarget.disabled = true;
+    button.disabled = true;
     try {
       if (!(await playerIdExists(entered))) {
         errorEl.textContent = "No Player ID matches that. Double-check and try again.";
-        e.currentTarget.disabled = false;
+        button.disabled = false;
         return;
       }
       // Point the ID at this device so its game index becomes writable here.
@@ -1033,7 +1036,7 @@ function openPlayerIdSheet() {
       refreshMyGames();
     } catch (err) {
       errorEl.textContent = err.message;
-      e.currentTarget.disabled = false;
+      button.disabled = false;
     }
   };
 }
@@ -1406,6 +1409,9 @@ function openGameSettingsSheet() {
   `);
 
   document.getElementById("sheet-submit").onclick = async (e) => {
+    // Captured up front: e.currentTarget is null once the event
+    // finishes dispatching, which is before any await below resumes.
+    const button = e.currentTarget;
     const errorEl = document.getElementById("sheet-error");
     const name = document.getElementById("settings-name").value.trim().slice(0, 40);
     const buyInRaw = document.getElementById("settings-buyin").value.trim();
@@ -1430,7 +1436,7 @@ function openGameSettingsSheet() {
       newChipsPerDollar = chipValue / defaultBuyIn;
     }
 
-    e.currentTarget.disabled = true;
+    button.disabled = true;
     try {
       await updateGameSettings(state.code, {
         name: name || "Poker Night",
@@ -1441,7 +1447,7 @@ function openGameSettingsSheet() {
       closeSheet();
     } catch (err) {
       errorEl.textContent = err.message;
-      e.currentTarget.disabled = false;
+      button.disabled = false;
     }
   };
 
@@ -1559,9 +1565,12 @@ function openAddPlayerSheet() {
   });
 
   regularsBtn?.addEventListener("click", async (e) => {
+    // Captured up front: e.currentTarget is null once the event
+    // finishes dispatching, which is before any await below resumes.
+    const button = e.currentTarget;
     const errorEl = document.getElementById("sheet-error");
     const chosen = checkedRegulars();
-    e.currentTarget.disabled = true;
+    button.disabled = true;
     try {
       for (const person of chosen) {
         await addManualPlayer(state.code, person.name, state.uid, person.playerId, gameName);
@@ -1571,11 +1580,14 @@ function openAddPlayerSheet() {
       closeSheet();
     } catch (err) {
       errorEl.textContent = err.message;
-      e.currentTarget.disabled = false;
+      button.disabled = false;
     }
   });
 
   document.getElementById("sheet-submit").onclick = async (e) => {
+    // Captured up front: e.currentTarget is null once the event
+    // finishes dispatching, which is before any await below resumes.
+    const button = e.currentTarget;
     const errorEl = document.getElementById("sheet-error");
     const name = document.getElementById("sheet-player-name").value.trim();
     const enteredId = document.getElementById("sheet-player-id").value.trim().toUpperCase();
@@ -1583,11 +1595,11 @@ function openAddPlayerSheet() {
       errorEl.textContent = "Enter a name.";
       return;
     }
-    e.currentTarget.disabled = true;
+    button.disabled = true;
     try {
       if (enteredId && !(await playerIdExists(enteredId))) {
         errorEl.textContent = "No Player ID matches that. Check it with them, or leave it blank.";
-        e.currentTarget.disabled = false;
+        button.disabled = false;
         return;
       }
       await addManualPlayer(state.code, name, state.uid, enteredId || null, gameName);
@@ -1596,7 +1608,7 @@ function openAddPlayerSheet() {
       closeSheet();
     } catch (err) {
       errorEl.textContent = err.message;
-      e.currentTarget.disabled = false;
+      button.disabled = false;
     }
   };
 }
@@ -1622,19 +1634,22 @@ function openBuyInSheet(player) {
     idPrefix: "buyin",
   });
   document.getElementById("sheet-submit").onclick = async (e) => {
+    // Captured up front: e.currentTarget is null once the event
+    // finishes dispatching, which is before any await below resumes.
+    const button = e.currentTarget;
     const amount = amountCtl.getAmount();
     if (!isFinite(amount) || amount <= 0) {
       document.getElementById("sheet-error").textContent = "Enter an amount greater than 0.";
       return;
     }
-    e.currentTarget.disabled = true;
+    button.disabled = true;
     try {
       await addBuyIn(state.code, player.uid, amount);
       logActivity(state.code, state.playerName, `Added a ${money(amount)} ${label} for ${player.name}`).catch(() => {});
       closeSheet();
     } catch (err) {
       document.getElementById("sheet-error").textContent = err.message;
-      e.currentTarget.disabled = false;
+      button.disabled = false;
     }
   };
 }
@@ -1658,19 +1673,22 @@ function openCashOutSheet(player) {
     idPrefix: "cashout",
   });
   document.getElementById("sheet-submit").onclick = async (e) => {
+    // Captured up front: e.currentTarget is null once the event
+    // finishes dispatching, which is before any await below resumes.
+    const button = e.currentTarget;
     const amount = amountCtl.getAmount();
     if (!isFinite(amount) || amount < 0) {
       document.getElementById("sheet-error").textContent = "Enter a valid amount.";
       return;
     }
-    e.currentTarget.disabled = true;
+    button.disabled = true;
     try {
       await addCashOut(state.code, player.uid, amount);
       logActivity(state.code, state.playerName, `Cashed out ${player.name} for ${money(amount)}`).catch(() => {});
       closeSheet();
     } catch (err) {
       document.getElementById("sheet-error").textContent = err.message;
-      e.currentTarget.disabled = false;
+      button.disabled = false;
     }
   };
 }
@@ -1737,13 +1755,16 @@ function contentSheetItems(items, player) {
           `<input class="field" id="edit-name-input" type="text" maxlength="30" value="${escapeHtml(player.name)}" />`;
 
         document.getElementById("sheet-submit").onclick = async (e) => {
+          // Captured up front: e.currentTarget is null once the event
+          // finishes dispatching, which is before any await below resumes.
+          const button = e.currentTarget;
           const errorEl = document.getElementById("sheet-error");
           const newName = document.getElementById("edit-name-input").value.trim();
           if (!newName) {
             errorEl.textContent = "Enter a name.";
             return;
           }
-          e.currentTarget.disabled = true;
+          button.disabled = true;
           try {
             const oldName = player.name;
             await renamePlayer(state.code, player.uid, newName);
@@ -1751,7 +1772,7 @@ function contentSheetItems(items, player) {
             closeSheet();
           } catch (err) {
             errorEl.textContent = err.message;
-            e.currentTarget.disabled = false;
+            button.disabled = false;
           }
         };
         return;
@@ -1765,12 +1786,15 @@ function contentSheetItems(items, player) {
       });
 
       document.getElementById("sheet-submit").onclick = async (e) => {
+        // Captured up front: e.currentTarget is null once the event
+        // finishes dispatching, which is before any await below resumes.
+        const button = e.currentTarget;
         const newAmount = amountCtl.getAmount();
         if (!isFinite(newAmount) || newAmount < 0) {
           document.getElementById("sheet-error").textContent = "Enter a valid amount.";
           return;
         }
-        e.currentTarget.disabled = true;
+        button.disabled = true;
         try {
           await editPlayerEntry(state.code, player.uid, item.field, item.buyInId, newAmount);
           logActivity(
@@ -1781,7 +1805,7 @@ function contentSheetItems(items, player) {
           closeSheet();
         } catch (err) {
           document.getElementById("sheet-error").textContent = err.message;
-          e.currentTarget.disabled = false;
+          button.disabled = false;
         }
       };
     };
