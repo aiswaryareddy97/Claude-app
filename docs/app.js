@@ -76,12 +76,88 @@ const gameRef = (code) => doc(db, "games", code);
 const playersRef = (code) => collection(db, "games", code, "players");
 const playerRef = (code, uid) => doc(db, "games", code, "players", uid);
 const activityRef = (code) => collection(db, "games", code, "activity");
+const playerIdRef = (playerId) => doc(db, "playerIds", playerId);
+const playerIdGamesRef = (playerId) => collection(db, "playerIds", playerId, "games");
+
+// ---------------------------------------------------------------------
+// Player ID — a person's identity across games and devices
+//
+// The anonymous auth uid identifies a *device* and dies with the browser's
+// storage. A Player ID is the shareable stand-in for a *person*: you give
+// it to a host once ("that's Sam, PK7X9Q"), they save it with your name,
+// and from then on any game they add you to shows up on your own phone
+// without you typing a game code.
+//
+// Deliberately not a secure credential: anyone who knows your ID can point
+// their app at it. Since only the host can write to a game, the worst that
+// buys them is spectating a game they weren't invited to.
+// ---------------------------------------------------------------------
+
+const PLAYER_ID_LENGTH = 6;
+
+async function claimPlayerId(playerId, uid, name) {
+  await setDoc(playerIdRef(playerId), { uid, name, updatedAt: Timestamp.now() }, { merge: true });
+}
+
+async function generatePlayerId(uid, name) {
+  for (let i = 0; i < 8; i++) {
+    const id = generateCode(PLAYER_ID_LENGTH);
+    const snap = await getDoc(playerIdRef(id));
+    if (snap.exists()) continue;
+    await claimPlayerId(id, uid, name);
+    return id;
+  }
+  throw new Error("Couldn't generate a Player ID. Please try again.");
+}
+
+async function playerIdExists(playerId) {
+  const snap = await getDoc(playerIdRef(playerId));
+  return snap.exists();
+}
+
+// Lets a player's own device answer "which games am I in?" without knowing
+// any game codes. Written by whoever seated them — the host when adding a
+// regular, or the player themselves when they host or join.
+async function indexGameForPlayer(playerId, code, gameName) {
+  if (!playerId) return;
+  await setDoc(doc(playerIdGamesRef(playerId), code), {
+    code,
+    name: gameName,
+    addedAt: Timestamp.now(),
+  });
+}
+
+async function unindexGameForPlayer(playerId, code) {
+  await deleteDoc(doc(playerIdGamesRef(playerId), code));
+}
+
+// Resolves the index into games that are actually still live, pruning
+// pointers to games that ended or were deleted so the list stays short.
+async function fetchMyGames(playerId) {
+  if (!playerId) return [];
+  const snap = await getDocs(playerIdGamesRef(playerId));
+  const live = [];
+  for (const entry of snap.docs) {
+    const code = entry.id;
+    try {
+      const gameSnap = await getDoc(gameRef(code));
+      if (gameSnap.exists() && gameSnap.data().status === "active") {
+        live.push({ ...gameSnap.data(), code });
+        continue;
+      }
+    } catch {
+      // Unreadable (deleted, or offline) — treat like stale below.
+    }
+    unindexGameForPlayer(playerId, code).catch(() => {});
+  }
+  return live;
+}
 
 // ---------------------------------------------------------------------
 // Game service — mirrors PokerTracker/Services/GameService.swift
 // ---------------------------------------------------------------------
 
-async function createGame(name, hostUid, hostName, defaultBuyIn, chipsPerDollar) {
+async function createGame(name, hostUid, hostName, defaultBuyIn, chipsPerDollar, hostPlayerId) {
   for (let i = 0; i < 8; i++) {
     const code = generateCode();
     const ref = gameRef(code);
@@ -105,14 +181,16 @@ async function createGame(name, hostUid, hostName, defaultBuyIn, chipsPerDollar)
       buyIns: [{ id: crypto.randomUUID(), amount: defaultBuyIn, timestamp: Timestamp.now() }],
       joinedAt: Timestamp.now(),
     };
+    if (hostPlayerId) player.playerId = hostPlayerId;
     await setDoc(playerRef(code, hostUid), player);
+    indexGameForPlayer(hostPlayerId, code, game.name).catch(() => {});
 
     return game;
   }
   throw new Error("Couldn't generate a unique game code. Please try again.");
 }
 
-async function joinGame(code, uid, name) {
+async function joinGame(code, uid, name, playerId) {
   const upperCode = code.trim().toUpperCase();
   const snap = await getDoc(gameRef(upperCode));
   if (!snap.exists()) {
@@ -123,31 +201,47 @@ async function joinGame(code, uid, name) {
     throw new Error("This game has already ended.");
   }
 
-  const pRef = playerRef(upperCode, uid);
-  const existing = await getDoc(pRef);
-  if (!existing.exists()) {
-    await setDoc(pRef, {
-      uid,
-      name,
-      buyIns: [{ id: crypto.randomUUID(), amount: game.defaultBuyIn, timestamp: Timestamp.now() }],
-      joinedAt: Timestamp.now(),
-    });
+  // If the host already seated this person by Player ID, step into that
+  // seat rather than opening a second row for the same human — this is the
+  // duplicate-row problem the old manual-add flow had.
+  const playersSnap = await getDocs(playersRef(upperCode));
+  const alreadySeated = playerId && playersSnap.docs.some((d) => d.data().playerId === playerId);
+
+  if (!alreadySeated) {
+    const pRef = playerRef(upperCode, uid);
+    const existing = await getDoc(pRef);
+    if (!existing.exists()) {
+      const player = {
+        uid,
+        name,
+        buyIns: [{ id: crypto.randomUUID(), amount: game.defaultBuyIn, timestamp: Timestamp.now() }],
+        joinedAt: Timestamp.now(),
+      };
+      if (playerId) player.playerId = playerId;
+      await setDoc(pRef, player);
+    }
   }
+  indexGameForPlayer(playerId, upperCode, game.name).catch(() => {});
   return { ...game, code: upperCode };
 }
 
 // Host adds someone who doesn't have (or doesn't want to use) the app.
 // Starts with no buy-in yet — the host records it as a separate step —
 // which is what makes deletePlayer's "undo a mistake" window meaningful.
-async function addManualPlayer(code, name, hostUid) {
+async function addManualPlayer(code, name, hostUid, playerId, gameName) {
   const id = `manual-${crypto.randomUUID()}`;
-  await setDoc(playerRef(code, id), {
+  const player = {
     uid: id,
     name,
     buyIns: [],
     joinedAt: Timestamp.now(),
     addedBy: hostUid,
-  });
+  };
+  // With a Player ID attached, this stops being an anonymous placeholder:
+  // the real person's app can find the game and watch it live.
+  if (playerId) player.playerId = playerId;
+  await setDoc(playerRef(code, id), player);
+  if (playerId) indexGameForPlayer(playerId, code, gameName).catch(() => {});
   return id;
 }
 
@@ -321,6 +415,12 @@ function hasCashedOut(player) {
 function netOf(player) {
   return hasCashedOut(player) ? totalCashOut(player) - totalBuyIn(player) : null;
 }
+// "Is this row me?" — matches on the device's uid, and also on Player ID so
+// a seat the host created for you still reads as yours on your own phone.
+function isMe(player) {
+  if (player.uid === state.uid) return true;
+  return !!(state.playerId && player.playerId === state.playerId);
+}
 
 // ---------------------------------------------------------------------
 // Settlement — mirrors PokerTracker/Services/SettlementCalculator.swift
@@ -362,18 +462,39 @@ const NAME_KEY = "poker.playerName";
 const LAST_BUYIN_KEY = "poker.lastDefaultBuyIn";
 const LAST_CHIPVALUE_KEY = "poker.lastChipValue";
 const SAVED_PLAYERS_KEY = "poker.savedPlayerNames";
+const PLAYER_ID_KEY = "poker.playerId";
 
-function loadSavedPlayerNames() {
+// Saved regulars are {name, playerId?} — earlier versions stored a plain
+// array of names, so those are read back as bare {name} entries.
+function loadSavedPlayers() {
   try {
-    return JSON.parse(localStorage.getItem(SAVED_PLAYERS_KEY) || "[]");
+    const raw = JSON.parse(localStorage.getItem(SAVED_PLAYERS_KEY) || "[]");
+    return raw
+      .map((entry) => (typeof entry === "string" ? { name: entry } : entry))
+      .filter((entry) => entry && entry.name);
   } catch {
     return [];
   }
 }
-function rememberPlayerName(name) {
-  const names = loadSavedPlayerNames().filter((n) => n.toLowerCase() !== name.toLowerCase());
-  names.unshift(name);
-  localStorage.setItem(SAVED_PLAYERS_KEY, JSON.stringify(names.slice(0, 20)));
+function rememberPlayer(name, playerId) {
+  const saved = loadSavedPlayers();
+  const previous = saved.find((p) => p.name.toLowerCase() === name.toLowerCase());
+  const rest = saved.filter((p) => p.name.toLowerCase() !== name.toLowerCase());
+  const entry = { name };
+  // No ID passed means "leave it alone" rather than "unlink" — otherwise
+  // typing a name that happens to match a saved regular would silently
+  // drop the ID that makes their phone see the game.
+  const keptId = playerId || previous?.playerId;
+  if (keptId) entry.playerId = keptId;
+  rest.unshift(entry);
+  localStorage.setItem(SAVED_PLAYERS_KEY, JSON.stringify(rest.slice(0, 20)));
+}
+
+function getStoredPlayerId() {
+  return localStorage.getItem(PLAYER_ID_KEY);
+}
+function storePlayerId(playerId) {
+  localStorage.setItem(PLAYER_ID_KEY, playerId);
 }
 
 function loadHistory() {
@@ -537,6 +658,8 @@ function mountAmountInput(container, { chipsPerDollar, initialDollars = "", idPr
 
 const state = {
   uid: null,
+  playerId: null,
+  myGames: [],
   playerName: localStorage.getItem(NAME_KEY) || "",
   tab: "play", // 'play' | 'history'
   code: null,
@@ -632,6 +755,7 @@ function leaveGame() {
     state.resumeCode = leavingCode;
   }
   render();
+  refreshMyGames();
 }
 
 function saveHistorySnapshot(game) {
@@ -642,7 +766,10 @@ function saveHistorySnapshot(game) {
     cashOut: hasCashedOut(p) ? totalCashOut(p) : null,
     net: netOf(p),
   }));
-  const mine = results.find((r) => r.uid === state.uid);
+  // Matched against the live player docs, which carry playerId — the
+  // snapshot rows above only keep uid.
+  const myPlayer = state.players.find((p) => isMe(p));
+  const mine = myPlayer ? results.find((r) => r.uid === myPlayer.uid) : null;
   saveHistoryEntry({
     code: game.code,
     name: game.name,
@@ -742,7 +869,8 @@ function renderHome() {
       )}" autocomplete="name" />
 
       ${
-        state.resumeCode
+        // Redundant when the same game is already listed under Your Games.
+        state.resumeCode && !state.myGames.some((g) => g.code === state.resumeCode)
           ? `<button class="btn outline" id="btn-resume">↩ Rejoin game ${escapeHtml(state.resumeCode)}</button>`
           : ""
       }
@@ -755,10 +883,39 @@ function renderHome() {
 
       ${state.error ? `<p class="error-text">${escapeHtml(state.error)}</p>` : ""}
 
+      ${
+        state.myGames.length
+          ? `<div class="section-label">Your games</div>
+             <div class="card-list">
+               ${state.myGames
+                 .map(
+                   (g) => `
+                 <button class="row hist-row my-game-row" data-code="${escapeHtml(g.code)}">
+                   <div>
+                     <div class="player-name">${escapeHtml(g.name)}</div>
+                     <div class="buyin-line">${
+                       g.hostId === state.uid ? "You're hosting" : "In progress"
+                     } · tap to open</div>
+                   </div>
+                   <span class="code-pill">${escapeHtml(g.code)}</span>
+                 </button>`
+                 )
+                 .join("")}
+             </div>`
+          : ""
+      }
+
       <div class="home-actions">
         <button class="btn primary" id="btn-host">Host New Game</button>
         <button class="btn secondary" id="btn-join">Join Game</button>
       </div>
+
+      ${
+        state.playerId
+          ? `<button class="btn outline" id="btn-player-id">Your Player ID: ${escapeHtml(state.playerId)}</button>
+             <p class="hint">Share this with a host once and the games they add you to show up here.</p>`
+          : ""
+      }
     </div>`;
 
   const nameInput = document.getElementById("name-input");
@@ -784,6 +941,15 @@ function renderHome() {
     enterGame(state.resumeCode);
   });
 
+  contentEl.querySelectorAll(".my-game-row").forEach((row) => {
+    row.onclick = () => {
+      if (!nameGiven()) return;
+      enterGame(row.dataset.code);
+    };
+  });
+
+  document.getElementById("btn-player-id")?.addEventListener("click", openPlayerIdSheet);
+
   document.getElementById("btn-host").onclick = () => {
     if (nameGiven()) openHostSheet();
   };
@@ -799,6 +965,77 @@ function renderHome() {
     state.pendingJoinCode = null;
     openJoinSheet(code);
   }
+}
+
+// Refreshes the "which games am I in?" list. Fire-and-forget: a failure
+// here just means the section stays empty, which is recoverable by joining
+// with a code as before.
+async function refreshMyGames() {
+  if (!state.playerId) return;
+  try {
+    state.myGames = await fetchMyGames(state.playerId);
+    render();
+  } catch {
+    /* offline or unreadable — leave whatever's already listed */
+  }
+}
+
+function openPlayerIdSheet() {
+  openSheet(`
+    <h2>Your Player ID</h2>
+    <p class="code-display">${escapeHtml(state.playerId || "")}</p>
+    <p class="sheet-note">Give this to whoever hosts your games. Once they've saved it with your name, any game they add you to shows up on this phone automatically — no game code needed.</p>
+    <div class="sheet-actions">
+      <button class="btn outline" id="btn-copy-player-id">Copy ID</button>
+      <button class="btn primary" data-close>Done</button>
+    </div>
+
+    <label class="field-label" for="restore-player-id">Already have an ID?</label>
+    <input class="field" id="restore-player-id" type="text" placeholder="e.g. PK7X9Q" maxlength="8" autocapitalize="characters" autocorrect="off" />
+    <p class="sheet-note">Switching to a new phone, or cleared your browser? Enter your existing Player ID to pick your games back up.</p>
+    <p class="sheet-error" id="sheet-error"></p>
+    <button class="btn outline" id="btn-restore-player-id">Use this ID</button>
+  `);
+
+  document.getElementById("btn-copy-player-id").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(state.playerId);
+    } catch {
+      /* clipboard unavailable, ignore */
+    }
+  };
+
+  document.getElementById("btn-restore-player-id").onclick = async (e) => {
+    const errorEl = document.getElementById("sheet-error");
+    const entered = document.getElementById("restore-player-id").value.trim().toUpperCase();
+    if (!entered) {
+      errorEl.textContent = "Enter a Player ID.";
+      return;
+    }
+    if (entered === state.playerId) {
+      errorEl.textContent = "That's already the ID this phone is using.";
+      return;
+    }
+    e.currentTarget.disabled = true;
+    try {
+      if (!(await playerIdExists(entered))) {
+        errorEl.textContent = "No Player ID matches that. Double-check and try again.";
+        e.currentTarget.disabled = false;
+        return;
+      }
+      // Point the ID at this device so its game index becomes writable here.
+      await claimPlayerId(entered, state.uid, state.playerName);
+      storePlayerId(entered);
+      state.playerId = entered;
+      state.myGames = [];
+      closeSheet();
+      render();
+      refreshMyGames();
+    } catch (err) {
+      errorEl.textContent = err.message;
+      e.currentTarget.disabled = false;
+    }
+  };
 }
 
 function openHostSheet() {
@@ -850,7 +1087,14 @@ function openHostSheet() {
 
     button.disabled = true;
     try {
-      const game = await createGame(name, state.uid, state.playerName, defaultBuyIn, chipsPerDollar);
+      const game = await createGame(
+        name,
+        state.uid,
+        state.playerName,
+        defaultBuyIn,
+        chipsPerDollar,
+        state.playerId
+      );
       localStorage.setItem(LAST_BUYIN_KEY, String(defaultBuyIn));
       localStorage.setItem(LAST_CHIPVALUE_KEY, String(chipValue));
       closeSheet();
@@ -885,7 +1129,7 @@ function openJoinSheet(prefillCode) {
     }
     button.disabled = true;
     try {
-      const game = await joinGame(code, state.uid, state.playerName);
+      const game = await joinGame(code, state.uid, state.playerName, state.playerId);
       logActivity(game.code, state.playerName, "Joined the game").catch(() => {});
       closeSheet();
       enterGame(game.code);
@@ -924,7 +1168,7 @@ function renderRoom() {
             <div class="row-info">
               <div class="name-line">
                 <span class="player-name">${escapeHtml(p.name)}</span>
-                ${p.uid === myUid ? '<span class="you-pill">you</span>' : ""}
+                ${isMe(p) ? '<span class="you-pill">you</span>' : ""}
               </div>
               <div class="buyin-line">Buy-in: ${money(totalBuyIn(p))}${chipsNote}</div>
               ${hasCashedOut(p) ? `<div class="buyin-line">Cash-out: ${money(cashOutTotal)}${cashOutChipsNote}</div>` : ""}
@@ -1261,7 +1505,8 @@ function openTransferHostSheet(players) {
 
 function openAddPlayerSheet() {
   const inGameNames = new Set(state.players.map((p) => p.name.toLowerCase()));
-  const suggestions = loadSavedPlayerNames().filter((n) => !inGameNames.has(n.toLowerCase()));
+  const suggestions = loadSavedPlayers().filter((p) => !inGameNames.has(p.name.toLowerCase()));
+  const gameName = state.game?.name || "";
 
   openSheet(`
     <h2>Add Player</h2>
@@ -1271,11 +1516,16 @@ function openAddPlayerSheet() {
            <div class="regular-list">
              ${suggestions
                .map(
-                 (n) => `
+                 (p, idx) => `
                <label class="regular-item">
-                 <input type="checkbox" class="regular-check" value="${escapeHtml(n)}" />
-                 <span class="avatar" style="background:${avatarColorVar(n)};">${initials(n)}</span>
-                 <span class="player-name">${escapeHtml(n)}</span>
+                 <input type="checkbox" class="regular-check" value="${idx}" />
+                 <span class="avatar" style="background:${avatarColorVar(p.name)};">${initials(p.name)}</span>
+                 <span class="player-name">${escapeHtml(p.name)}</span>
+                 ${
+                   p.playerId
+                     ? `<span class="id-pill" title="Sees this game on their own phone">${escapeHtml(p.playerId)}</span>`
+                     : ""
+                 }
                </label>`
                )
                .join("")}
@@ -1286,7 +1536,9 @@ function openAddPlayerSheet() {
     }
     <label class="field-label" for="sheet-player-name">Name</label>
     <input class="field" id="sheet-player-name" type="text" placeholder="e.g. Sam" maxlength="30" />
-    <p class="sheet-note">They won't need the app — you'll record their buy-ins and cash-out for them, same as anyone else at the table.</p>
+    <label class="field-label" for="sheet-player-id">Their Player ID (optional)</label>
+    <input class="field" id="sheet-player-id" type="text" placeholder="e.g. PK7X9Q" maxlength="8" autocapitalize="characters" autocorrect="off" />
+    <p class="sheet-note">Leave the ID blank and they're just a name at the table — you record everything for them. Add their Player ID (they'll find it on their own Home screen) and this game shows up on their phone so they can follow along. Saved with their name for next time either way.</p>
     <p class="sheet-error" id="sheet-error"></p>
     <div class="sheet-actions">
       <button class="btn outline" data-close>Cancel</button>
@@ -1295,11 +1547,12 @@ function openAddPlayerSheet() {
   `);
 
   const regularsBtn = document.getElementById("btn-add-regulars");
-  const checkedNames = () => [...document.querySelectorAll(".regular-check:checked")].map((c) => c.value);
+  const checkedRegulars = () =>
+    [...document.querySelectorAll(".regular-check:checked")].map((c) => suggestions[Number(c.value)]);
 
   document.querySelectorAll(".regular-check").forEach((box) => {
     box.onchange = () => {
-      const n = checkedNames().length;
+      const n = checkedRegulars().length;
       regularsBtn.textContent = `Add ${n} to table`;
       regularsBtn.disabled = n === 0;
     };
@@ -1307,13 +1560,13 @@ function openAddPlayerSheet() {
 
   regularsBtn?.addEventListener("click", async (e) => {
     const errorEl = document.getElementById("sheet-error");
-    const names = checkedNames();
+    const chosen = checkedRegulars();
     e.currentTarget.disabled = true;
     try {
-      for (const name of names) {
-        await addManualPlayer(state.code, name, state.uid);
-        rememberPlayerName(name);
-        logActivity(state.code, state.playerName, `Added player "${name}"`).catch(() => {});
+      for (const person of chosen) {
+        await addManualPlayer(state.code, person.name, state.uid, person.playerId, gameName);
+        rememberPlayer(person.name, person.playerId);
+        logActivity(state.code, state.playerName, `Added player "${person.name}"`).catch(() => {});
       }
       closeSheet();
     } catch (err) {
@@ -1325,14 +1578,20 @@ function openAddPlayerSheet() {
   document.getElementById("sheet-submit").onclick = async (e) => {
     const errorEl = document.getElementById("sheet-error");
     const name = document.getElementById("sheet-player-name").value.trim();
+    const enteredId = document.getElementById("sheet-player-id").value.trim().toUpperCase();
     if (!name) {
       errorEl.textContent = "Enter a name.";
       return;
     }
     e.currentTarget.disabled = true;
     try {
-      await addManualPlayer(state.code, name, state.uid);
-      rememberPlayerName(name);
+      if (enteredId && !(await playerIdExists(enteredId))) {
+        errorEl.textContent = "No Player ID matches that. Check it with them, or leave it blank.";
+        e.currentTarget.disabled = false;
+        return;
+      }
+      await addManualPlayer(state.code, name, state.uid, enteredId || null, gameName);
+      rememberPlayer(name, enteredId || null);
       logActivity(state.code, state.playerName, `Added player "${name}"`).catch(() => {});
       closeSheet();
     } catch (err) {
@@ -1742,8 +2001,28 @@ async function boot() {
     )}</p></div>`;
     return;
   }
+
+  // Establish this person's Player ID, minting one on first run. Kept
+  // non-fatal: without it you lose "Your games", but hosting and joining
+  // by code work exactly as before.
+  try {
+    const stored = getStoredPlayerId();
+    if (stored) {
+      state.playerId = stored;
+      // Re-point the ID at this device's current uid, since anonymous auth
+      // can hand out a new one, and the rules check it to allow writes.
+      claimPlayerId(stored, state.uid, state.playerName).catch(() => {});
+    } else {
+      state.playerId = await generatePlayerId(state.uid, state.playerName);
+      storePlayerId(state.playerId);
+    }
+  } catch {
+    state.playerId = null;
+  }
+
   await checkResume();
   render();
+  refreshMyGames();
 }
 
 boot();

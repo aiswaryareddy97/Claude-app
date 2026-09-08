@@ -39,6 +39,17 @@ needed, installable straight from Safari (see "Web app" below).
   can't edit anything (see "Host-only controls" below)
 - **Add Player** (host only) — add someone who doesn't have or want the
   app; the host records their buy-ins and cash-out like anyone else's
+- **Player IDs** — everyone's Home screen shows a short ID (e.g. `PK7X9Q`).
+  Give it to your host once; they save it alongside your name in Regulars,
+  and from then on any game they add you to appears under **Your games**
+  on your own phone — no game code to type, and you can follow the table
+  live from your seat while the host runs it. Switching phones or clearing
+  your browser? Enter your existing ID to pick your games back up. It also
+  fixes the old duplicate-row problem: if the host already seated you by
+  ID, joining with the code steps into that seat instead of opening a
+  second one. Deliberately not a secure credential — anyone who knows your
+  ID can point their app at it, but since only the host can write, the most
+  that buys them is spectating.
 - **Delete Player** (host only) — undo adding the wrong person, but only
   while they have zero buy-ins recorded — once real money is tracked for
   them, they can't just be removed
@@ -280,11 +291,12 @@ Two things follow from that:
   every player regardless of buy-ins as part of tearing down the whole
   game.
 
-One known rough edge: if the host manually adds someone and that person
-*also* later joins themselves with the code, they end up as two separate
-rows (different underlying IDs) rather than merging into one. Not handled
-today — if it comes up, delete the empty manual placeholder before the
-real join happens.
+If the host adds someone **with their Player ID** and that person later
+joins with the code too, they step into the seat that's already there
+rather than opening a second row. Without an ID there's nothing to match
+on, so the old rough edge still applies: the same human ends up as two
+separate rows. If that happens, delete the empty placeholder before the
+real join — or save their Player ID with their name so it can't recur.
 
 ## Settlement algorithm
 
